@@ -54,11 +54,17 @@ contents that produce the same exit code as was originally present.
         "Provide a command that 'normalizes' the input before it is tested ("
         "e.g. a code formatter). If this command returns a non-zero exit code "
         "then the example will be skipped altogether."))
+@click.option(
+    '--timeout', default=1, type=click.INT, help=(
+        "Time out subprocesses after this many seconds. If set to <= 0 then "
+        "no timeout will be used."))
 @click.argument('filename', type=click.Path(
     exists=True, resolve_path=True, dir_okay=False,
 ))
 @click.argument('test', callback=validate_command)
-def shrinker(debug, quiet, backup, filename, test, shrinks, preprocess):
+def shrinker(
+    debug, quiet, backup, filename, test, shrinks, preprocess, timeout
+):
     if debug and quiet:
         raise click.UsageError("Cannot have both debug output and be quiet")
 
@@ -81,7 +87,7 @@ def shrinker(debug, quiet, backup, filename, test, shrinks, preprocess):
             with open(filename, 'wb') as o:
                 o.write(string)
             try:
-                subprocess.check_output(test)
+                subprocess.check_output(test, timeout=timeout)
                 return 0
             except subprocess.CalledProcessError as e:
                 return e.returncode
@@ -92,6 +98,10 @@ def shrinker(debug, quiet, backup, filename, test, shrinks, preprocess):
                 pass
             os.rename(backup, filename)
 
+    timeout *= 10
+    if timeout <= 0:
+        timeout = None
+
     if preprocess:
         def preprocessor(string):
             sp = subprocess.Popen(
@@ -99,10 +109,12 @@ def shrinker(debug, quiet, backup, filename, test, shrinks, preprocess):
                 stdout=subprocess.PIPE, universal_newlines=False
             )
             try:
-                out, _ = sp.communicate(string, timeout=2)
+                out, _ = sp.communicate(string, timeout=timeout)
                 assert isinstance(out, bytes)
                 return out
             except subprocess.TimeoutExpired:
+                return None
+            except subprocess.CalledProcessError:
                 return None
     else:
         preprocessor = None
@@ -128,7 +140,6 @@ def shrinker(debug, quiet, backup, filename, test, shrinks, preprocess):
     def shrink_callback(string, status):
         with open(os.path.join(shrinks, name_for_status(status)), 'wb') as o:
             o.write(string)
-
     shrinker = Shrinker(
         initial, classify, volume=volume,
         shrink_callback=shrink_callback, printer=click.echo,
@@ -152,6 +163,10 @@ def shrinker(debug, quiet, backup, filename, test, shrinks, preprocess):
             shrinker.debug("Reusing previous %d byte example for label %r" % (
                 len(contents), status
             ))
+
+    if timeout is not None:
+        timeout //= 10
+
     try:
         shrinker.shrink()
     finally:
