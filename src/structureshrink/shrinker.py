@@ -47,9 +47,9 @@ class Shrinker(object):
             raise ValueError("Initial example is rejected by preprocessing")
         label = self.classify(preprocessed)
         self.output("Initial example: %s, labelled %r" % ((
-            "%d initial" % (len(initial),)
+            "%d bytes " % (len(initial),)
             if initial == preprocessed
-            else "%d initial (%d preprocessed)" % (
+            else "%d bytes (%d preprocessed)" % (
                 len(initial), len(preprocessed))),
             label))
 
