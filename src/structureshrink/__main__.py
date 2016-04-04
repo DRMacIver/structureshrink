@@ -14,14 +14,28 @@ def validate_command(ctx, param, value):
     return os.path.abspath(what)
 
 
-@click.command()
+@click.command(
+    help="""
+structureshrink takes a file and a test command and attempts to produce a
+minimal example of every distinct status code it sees out of that command.
+(Normally you're only interested in one, but sometimes there are other
+interesting behaviours that occur while running it).
+
+Usage is 'structuresthrink filename test'.
+""".strip()
+)
 @click.option("--debug", default=False, is_flag=True)
 @click.option("--quiet", default=False, is_flag=True)
-@click.option("--backup", default='')
+@click.option(
+    "--backup", default='', help=(
+        "Name of the backup file to create. Defaults to adding .bak to the "
+        "name of the source file"))
 @click.option(
     '--shrinks', default="shrinks",
     type=click.Path(file_okay=False, resolve_path=True))
-@click.argument('filename', type=click.Path(exists=True, resolve_path=True))
+@click.argument('filename', type=click.Path(
+    exists=True, resolve_path=True, dir_okay=False,
+))
 @click.argument('test', callback=validate_command)
 def shrinker(debug, quiet, backup, filename, test, shrinks):
     if debug and quiet:
