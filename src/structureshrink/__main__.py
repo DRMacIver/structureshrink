@@ -4,7 +4,8 @@ from shutil import which
 import shlex
 import click
 import subprocess
-import time
+import hashlib
+import sys
 
 
 def validate_command(ctx, param, value):
@@ -59,12 +60,16 @@ contents that produce the same exit code as was originally present.
     '--timeout', default=1, type=click.INT, help=(
         "Time out subprocesses after this many seconds. If set to <= 0 then "
         "no timeout will be used."))
+@click.option(
+    '--classify', default=None, callback=validate_command
+)
 @click.argument('filename', type=click.Path(
-    exists=True, resolve_path=True, dir_okay=False,
+    exists=True, resolve_path=True, dir_okay=False, allow_dash=True
 ))
 @click.argument('test', callback=validate_command)
 def shrinker(
-    debug, quiet, backup, filename, test, shrinks, preprocess, timeout
+    debug, quiet, backup, filename, test, shrinks, preprocess, timeout,
+    classify,
 ):
     if debug and quiet:
         raise click.UsageError("Cannot have both debug output and be quiet")
@@ -82,23 +87,57 @@ def shrinker(
     except FileNotFoundError:
         pass
 
-    def classify(string):
-        try:
-            os.rename(filename, backup)
-            with open(filename, 'wb') as o:
-                o.write(string)
+    seen_output = set()
+
+    def classify_data(string):
+        if filename == '-':
+            sp = subprocess.Popen(
+                test, stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL, universal_newlines=False
+            )
             try:
-                subprocess.check_output(
-                    test, timeout=timeout, stdin=subprocess.DEVNULL)
-                return 0
+                sp.communicate(string, timeout=timeout)
+            finally:
+                if sp.returncode is None:
+                    sp.stdin.close()
+                    sp.kill()
+            result = sp.returncode
+        else:
+            try:
+                os.rename(filename, backup)
+                with open(filename, 'wb') as o:
+                    o.write(string)
+                try:
+                    subprocess.check_output(
+                        test, timeout=timeout, stdin=subprocess.DEVNULL)
+                    result = 0
+                except subprocess.CalledProcessError as e:
+                    result = e.returncode
+            finally:
+                try:
+                    os.remove(filename)
+                except FileNotFoundError:
+                    pass
+                os.rename(backup, filename)
+        if classify is None or result is None:
+            return result
+        else:
+            try:
+                classify_output = subprocess.check_output(
+                    classify, timeout=timeout, stdin=subprocess.DEVNULL)
+                classify_return = 0
             except subprocess.CalledProcessError as e:
-                return e.returncode
-        finally:
-            try:
-                os.remove(filename)
-            except FileNotFoundError:
-                pass
-            os.rename(backup, filename)
+                classify_output = e.output
+                classify_return = e.returncode
+            if classify_output and classify_output not in seen_output:
+                shrinker.debug(
+                    "New classification: %r" % (classify_output,)
+                )
+            return ':%d:%d:%s:' % (
+                result, classify_return,
+                hashlib.sha1(classify_output).hexdigest()[:8]
+                if classify_output else '.'
+            )
 
     timeout *= 10
     if timeout <= 0:
@@ -127,8 +166,11 @@ def shrinker(
     else:
         preprocessor = None
 
-    with open(filename, 'rb') as o:
-        initial = o.read()
+    if filename == '-':
+        initial = sys.stdin.buffer.read()
+    else:
+        with open(filename, 'rb') as o:
+            initial = o.read()
 
     if debug:
         volume = Volume.debug
@@ -138,18 +180,22 @@ def shrinker(
         volume = Volume.normal
 
     def name_for_status(status):
-        *base, ext = os.path.basename(filename).split(os.extsep, 1)
-        base = os.extsep.join(base)
-        if base:
-            return os.path.extsep.join(((base + "-%r" % (status,), ext)))
+        if filename == '-':
+            base = ''
+            ext = 'example'
         else:
-            return ext + "-%r" % (status,)
+            *base, ext = os.path.basename(filename).split(os.extsep, 1)
+            base = os.extsep.join(base)
+        if base:
+            return os.path.extsep.join(((base, "%s" % (status,), ext)))
+        else:
+            return os.path.extsep.join(((ext, "%s" % (status,))))
 
     def shrink_callback(string, status):
         with open(os.path.join(shrinks, name_for_status(status)), 'wb') as o:
             o.write(string)
     shrinker = Shrinker(
-        initial, classify, volume=volume,
+        initial, classify_data, volume=volume,
         shrink_callback=shrink_callback, printer=click.echo,
         preprocess=preprocessor,
     )
@@ -178,9 +224,12 @@ def shrinker(
     try:
         shrinker.shrink()
     finally:
-        os.rename(filename, backup)
-        with open(filename, 'wb') as o:
-            o.write(shrinker.best[initial_label])
+        if filename != "-":
+            os.rename(filename, backup)
+            with open(filename, 'wb') as o:
+                o.write(shrinker.best[initial_label])
+        else:
+            sys.stdout.buffer.write(shrinker.best[initial_label])
 
 
 if __name__ == '__main__':
