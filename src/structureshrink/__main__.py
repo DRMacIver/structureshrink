@@ -1,17 +1,23 @@
 from structureshrink import shrink, Volume
 import os
 from shutil import which
+import shlex
 import click
 import subprocess
 
 
 def validate_command(ctx, param, value):
-    if os.path.exists(value):
-        return os.path.abspath(value)
-    what = which(value)
-    if what is None:
-        raise click.BadParameter("%s: command not found" % (value,))
-    return os.path.abspath(what)
+    parts = shlex.split(value)
+    command = parts[0]
+
+    if os.path.exists(command):
+        command = os.path.abspath(command)
+    else:
+        what = which(command)
+        if what is None:
+            raise click.BadParameter("%s: command not found" % (command,))
+        command = os.path.abspath(what)
+    return [command] + parts[1:]
 
 
 @click.command(
@@ -60,7 +66,7 @@ def shrinker(debug, quiet, backup, filename, test, shrinks):
             with open(filename, 'wb') as o:
                 o.write(string)
             try:
-                subprocess.check_output([test])
+                subprocess.check_output(test)
                 return 0
             except subprocess.CalledProcessError as e:
                 return e.returncode
