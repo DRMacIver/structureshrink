@@ -133,6 +133,7 @@ def shrinker(
                 shrinker.debug(
                     "New classification: %r" % (classify_output,)
                 )
+                seen_output.add(classify_output)
             return ':%d:%d:%s:' % (
                 result, classify_return,
                 hashlib.sha1(classify_output).hexdigest()[:8]
