@@ -73,7 +73,7 @@ class Shrinker(object):
 
         preprocessed = self.__preprocess(string)
         if preprocessed is None:
-            result = False
+            result = None
         else:
             string = preprocessed
             preprocess_key = cache_key(preprocessed)
@@ -98,7 +98,7 @@ class Shrinker(object):
                             "Shrink %d: Label %r now %d bytes (deleted %d)" % (
                                 self.shrinks, result, len(string),
                                 len(self.best[result]) - len(string)))
-                self.__shrink_callback(string)
+                self.__shrink_callback(string, result)
                 self.__best[result] = string
         for k in keys:
             self.__cache[k] = result

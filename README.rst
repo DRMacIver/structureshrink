@@ -101,3 +101,21 @@ preprocessor for formatting your data (e.g. clang-format). This runs before
 shrinking, and can also have the advantage that it speeds up the shrink by
 removing useless shrinks (at least, as long as your preprocessor is faster than
 your test program).
+
+
+Usage
+-----
+
+There's a library and a commannd line tool. Neither are what I would describe
+as documented.
+
+Development status
+------------------
+
+Somewhere between "Research prototype" and "Usable tool", but much closer to
+the first one. It seems to work pretty well, and it's not completely fragile,
+but it's definitely rough around the edges. It's certainly not going to
+maintain backwards compatibility.
+
+It's not particularly well tested right now (by my standards it barely counts
+as tested at all), so it's probably broken in amusing ways.
