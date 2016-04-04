@@ -176,11 +176,7 @@ class Shrinker(object):
                         lambda ls: self.classify(ngram.join(ls)) == label
                     )
                     if final != initial:
-                        self.debug("Deleted %d parts" % (
-                            len(initial) - len(final),))
                         self.__useful_ngrams.add(ngram)
-                    else:
-                        self.__useful_ngrams.discard(ngram)
 
                 if initial_shrinks != self.shrinks:
                     continue
@@ -196,8 +192,6 @@ class Shrinker(object):
                     )
                     if minigram != ngram:
                         self.__useful_ngrams.add(minigram)
-                        self.debug(
-                            "Shrunk ngram %r -> %r" % (ngram, minigram))
 
                 if initial_shrinks != self.shrinks:
                     continue
@@ -213,10 +207,8 @@ class Shrinker(object):
                     while i + width <= len(self.best[label]):
                         c = self.best[label]
                         d = c[:i] + c[i + width:]
-                        if self.classify(d) != label:
-                            i += 1
-                        else:
-                            assert d == self.best[label]
+                        self.classify(d)
+                        i += 1
                     width -= 1
 
 
