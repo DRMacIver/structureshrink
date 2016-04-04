@@ -1,4 +1,5 @@
 import hashlib
+from collections import OrderedDict
 
 
 def sort_key(s):
@@ -28,21 +29,20 @@ class Shrinker(object):
 
         self.__cache = {}
         self.__preprocess_cache = {}
-        self.__best = initial
+        self.__best = OrderedDict()
         self.__ngram_scores = {}
         self.__useful_ngrams = set()
         self.shrinks = 0
-        preprocessed = preprocess(initial)
+        preprocessed = self.__preprocess(initial)
         if preprocessed is None:
             raise ValueError("Initial example is rejected by preprocessing")
-        if not self.criterion(preprocessed):
-            raise ValueError("Initial example does not satisfy criterion")
-        self.__best = preprocessed
-        if len(self.__best) != len(initial):
-            self.debug("Initial size: %d bytes (%d preprocessed)" % (
-                len(initial), len(self.best)))
-        else:
-            self.debug("Initial size: %d bytes" % (len(initial),))
+        label = self.criterion(preprocessed)
+        self.debug("Initial example: %s, labelled %r" % ((
+            "%d initial" % (len(initial),)
+            if initial == preprocessed
+            else "%d initial (%d preprocessed)" % (
+                len(initial), len(preprocessed))),
+            label))
 
     @property
     def best(self):
@@ -61,85 +61,112 @@ class Shrinker(object):
         if preprocessed is None:
             result = False
         else:
+            string = preprocessed
             preprocess_key = cache_key(preprocessed)
             keys.append(preprocess_key)
             try:
                 result = self.__cache[preprocess_key]
             except KeyError:
                 result = self.__criterion(preprocessed)
-            if result and sort_key(string) < sort_key(self.best):
+            if (
+                result not in self.best or
+                sort_key(string) < sort_key(self.best[result])
+            ):
                 self.shrinks += 1
-                self.debug(
-                    "Shrink %d: %d bytes (deleted %d)" % (
-                        self.shrinks, len(string),
-                        len(self.best) - len(string)))
+                if self.best:
+                    if result not in self.best:
+                        self.debug((
+                            "Shrink %d: Discovered new label %r"
+                            " with %d bytes") % (
+                                self.shrinks, result, len(string)))
+                    else:
+                        self.debug(
+                            "Shrink %d: Label %r now %d bytes (deleted %d)" % (
+                                self.shrinks, result, len(string),
+                                len(self.best[result]) - len(string)))
                 self.__shrink_callback(string)
-                self.__best = string
+                self.__best[result] = string
         for k in keys:
             self.__cache[k] = result
         return result
 
-    def __suitable_ngrams(self):
+    def __suitable_ngrams(self, label):
         ngrams_by_size = {}
-        for gs in (self.__useful_ngrams, ngrams(self.best)):
+        self.debug("Calculating ngrams for %r" % (label,))
+
+        for gs in [self.__useful_ngrams, ngrams(self.best[label])]:
             for g in gs:
-                ngrams_by_size.setdefault(len(g), []).append(g)
+                ngrams_by_size.setdefault(len(g), set()).add(g)
+        for k in list(ngrams_by_size):
+            ngrams_by_size[k] = list(ngrams_by_size[k])
+
         for _, grams in reversed(sorted(ngrams_by_size.items())):
             grams = list(filter(None, grams))
-            grams.sort(key=lambda s: (score(s, self.best), s))
+            grams.sort(key=lambda s: (score(s, self.best[label]), s))
             for ngram in grams:
-                if len(self.best.split(ngram)) > 2:
+                if len(self.best[label].split(ngram)) > 2:
                     yield ngram
 
     def shrink(self):
         prev = None
-        while prev != self.best:
-            prev = self.best
-            for ngram in self.__suitable_ngrams():
-                initial = self.best.split(ngram)
-                if len(initial) <= 2:
-                    self.__demote_ngram(ngram)
+        while prev != self.shrinks:
+            prev = self.shrinks
+            options = list(self.best.items())
+            options.sort(
+                key=lambda lr: sort_key(lr[1]), reverse=True
+            )
+            for label, current in options:
+                if not current:
                     continue
-                self.debug(
-                    "Splitting by %r into %d parts. Smallest size %d" % (
-                        ngram, len(initial), min(map(len, initial))))
-                final = _lsmin(
-                    initial, lambda ls: self.criterion(ngram.join(ls))
-                )
-                if final != initial:
-                    self.debug("Deleted %d parts" % (
-                        len(initial) - len(final),))
-                    self.__useful_ngrams.add(ngram)
-                else:
-                    self.__useful_ngrams.discard(ngram)
-
-            if prev != self.best:
-                continue
-
-            for ngram in self.__suitable_ngrams():
-                initial = self.best.split(ngram)
-                self.debug("Attempting to to minimize %r" % (ngram,))
-                minigram = bytemin(
-                    ngram, lambda ls: self.criterion(
-                        ls.join(initial)
-                    )
-                )
-                if minigram != ngram:
-                    self.__useful_ngrams.add(minigram)
+                self.debug("Shrinking for label %r" % (label,))
+                for ngram in self.__suitable_ngrams(label):
+                    initial = self.best[label].split(ngram)
+                    assert len(initial) > 2
                     self.debug(
-                        "Shrunk ngram %r -> %r" % (ngram, minigram))
+                        "Splitting by %r into %d parts. Smallest size %d" % (
+                            ngram, len(initial), min(map(len, initial))))
+                    final = _lsmin(
+                        initial,
+                        lambda ls: self.criterion(ngram.join(ls)) == label
+                    )
+                    if final != initial:
+                        self.debug("Deleted %d parts" % (
+                            len(initial) - len(final),))
+                        self.__useful_ngrams.add(ngram)
+                    else:
+                        self.__useful_ngrams.discard(ngram)
 
-            if prev != self.best:
-                continue
-            self.debug("Minimizing by bytes")
-            bytemin(self.best, self.criterion)
-            if prev != self.best:
-                continue
-            self.debug("Quadratic minimize by bytes")
-            _quadmin(list(self.best), lambda ls: self.criterion(bytes(ls)))
+                if prev != self.shrinks:
+                    continue
+
+                for ngram in self.__suitable_ngrams(label):
+                    initial = self.best[label].split(ngram)
+                    self.debug("Attempting to minimize %r" % (ngram,))
+                    minigram = bytemin(
+                        ngram, lambda ls: self.criterion(
+                            ls.join(initial)
+                        ) == label
+                    )
+                    if minigram != ngram:
+                        self.__useful_ngrams.add(minigram)
+                        self.debug(
+                            "Shrunk ngram %r -> %r" % (ngram, minigram))
+
+                if prev != self.shrinks:
+                    continue
+                self.debug("Minimizing by bytes")
+                bytemin(self.best, lambda b: self.criterion(b) == label)
+                if prev != self.shrinks:
+                    continue
+                self.debug("Quadratic minimize by bytes")
+                _quadmin(
+                    list(self.best),
+                    lambda ls: self.criterion(bytes(ls)) == label
+                )
 
 
 def ngrams(string):
+    assert isinstance(string, bytes)
     grams_to_indices = {b'': range(len(string))}
     grams = []
     c = 0
@@ -227,8 +254,9 @@ def _quadmin(ls, criterion):
             i = 0
             while i + width <= len(ls):
                 ts = ls[:i] + ls[i + width:]
+                assert len(ts) < len(ls)
                 if criterion(ts):
-                    ts = ls
+                    ls = ts
                 else:
                     i += 1
             width -= 1
@@ -238,6 +266,7 @@ def _quadmin(ls, criterion):
             j = 0
             while j < i:
                 ts = ls[:j] + ls[i:]
+                assert len(ts) < len(ls)
                 if criterion(ts):
                     ls = ts
                     i = j

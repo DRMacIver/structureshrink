@@ -7,6 +7,24 @@ file and uses it to produce smaller examples of the same sort of file.
 It considers an example smaller if it contains strictly fewer bytes.
 
 
+Multishrinking
+--------------
+
+Rather than shrinking with respect to a single predicate, structureshrink
+insteads shrinks with respect to a *classification*. It takes a function that
+maps data to a label. It then tries to produce the smallest example for *each*
+label. 
+
+For a command line invocation the label should usually be the exit status of
+the program. For library usage it can be any hashable python value.
+
+This has a couple advantages:
+
+1. It allows you to `detect interesting failures that might occur doing the
+   course of shrinking <http://blog.regehr.org/archives/1284>`_.
+2. Attempts to shrink one label can result in shrinking another label. This
+   potentially allows escaping local minima.
+
 Core Algorithm
 --------------
 
