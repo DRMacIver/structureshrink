@@ -31,10 +31,14 @@ minimal example of every distinct status code it sees out of that command.
 (Normally you're only interested in one, but sometimes there are other
 interesting behaviours that occur while running it).
 
-Usage is 'structureshrink filename test'. The file will be repeatedly
-overwritten with a smaller version of it, with a backup placed in the backup
-file. When the program exits the file will be replaced with the smallest
-contents that produce the same exit code as was originally present.
+Usage is 'structureshrink test filename filenames...'. The file will be
+repeatedly overwritten with a smaller version of it, with a backup placed in
+the backup file. When the program exits the file will be replaced with the
+smallest contents that produce the same exit code as was originally present.
+
+Additional files will not be replaced but will be used as additional examples,
+which may discover other interesting files as well as aiding the shrinking
+process.
 """.strip()
 )
 @click.option("--debug", default=False, is_flag=True, help=(
@@ -60,16 +64,17 @@ contents that produce the same exit code as was originally present.
     '--timeout', default=1, type=click.INT, help=(
         "Time out subprocesses after this many seconds. If set to <= 0 then "
         "no timeout will be used."))
-@click.option(
-    '--classify', default=None, callback=validate_command
-)
+@click.option('--classify', default=None, callback=validate_command)
+@click.argument('test', callback=validate_command)
 @click.argument('filename', type=click.Path(
     exists=True, resolve_path=True, dir_okay=False, allow_dash=True
 ))
-@click.argument('test', callback=validate_command)
+@click.argument('filenames', type=click.Path(
+    exists=True, resolve_path=True, dir_okay=False, allow_dash=False
+), nargs=-1)
 def shrinker(
     debug, quiet, backup, filename, test, shrinks, preprocess, timeout,
-    classify,
+    classify, filenames,
 ):
     if debug and quiet:
         raise click.UsageError("Cannot have both debug output and be quiet")
@@ -204,25 +209,29 @@ def shrinker(
     # Go through the old shrunk files. This both reintegrates them into our
     # current shrink state so we can resume and also lets us clear out old bad
     # examples.
-    for f in os.listdir(shrinks):
-        path = os.path.join(shrinks, f)
-        if not os.path.isfile(path):
-            continue
-        with open(path, 'rb') as i:
-            contents = i.read()
-        status = shrinker.classify(contents)
-        if name_for_status(status) != f:
-            shrinker.debug("Clearing out defunct %r file" % (f,))
-            os.unlink(path)
-        else:
-            shrinker.debug("Reusing previous %d byte example for label %r" % (
-                len(contents), status
-            ))
-
-    if timeout is not None:
-        timeout //= 10
-
     try:
+        for f in os.listdir(shrinks):
+            path = os.path.join(shrinks, f)
+            if not os.path.isfile(path):
+                continue
+            with open(path, 'rb') as i:
+                contents = i.read()
+            status = shrinker.classify(contents)
+            if name_for_status(status) != f:
+                shrinker.debug("Clearing out defunct %r file" % (f,))
+                os.unlink(path)
+            else:
+                shrinker.debug(
+                    "Reusing previous %d byte example for label %r" % (
+                        len(contents), status
+                    ))
+        for filepath in filenames:
+            with open(filepath, 'rb') as i:
+                value = i.read()
+            shrinker.classify(value)
+
+        if timeout is not None:
+            timeout //= 10
         shrinker.shrink()
     finally:
         if filename != "-":
