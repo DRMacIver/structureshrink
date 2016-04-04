@@ -52,6 +52,7 @@ class Shrinker(object):
             else "%d bytes (%d preprocessed)" % (
                 len(initial), len(preprocessed))),
             label))
+        self.__initial_label = label
 
     def output(self, text):
         if self.__volume >= Volume.normal:
@@ -133,9 +134,11 @@ class Shrinker(object):
             assert self.shrinks > prev
             prev = self.shrinks
             options = list(self.best.items())
-            options.sort(
-                key=lambda lr: sort_key(lr[1]), reverse=True
-            )
+            # Always prefer the label we started with, because that's the one
+            # the user is most likely to be interested in. Amongst the rest,
+            # go for the one that is currently most complicated.
+            options.sort(key=lambda lr: sort_key(lr[1]), reverse=True)
+            options.sort(key=lambda lr: lr[0] != self.__initial_label)
             for label, current in options:
                 if not current:
                     continue
