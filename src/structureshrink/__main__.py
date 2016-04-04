@@ -1,4 +1,4 @@
-from structureshrink import shrink, Volume
+from structureshrink import Shrinker, Volume
 import os
 from shutil import which
 import shlex
@@ -27,11 +27,18 @@ minimal example of every distinct status code it sees out of that command.
 (Normally you're only interested in one, but sometimes there are other
 interesting behaviours that occur while running it).
 
-Usage is 'structuresthrink filename test'.
+Usage is 'structureshrink filename test'. The file will be repeatedly
+overwritten with a smaller version of it, with a backup placed in the backup
+file. When the program exits the file will be replaced with the smallest
+contents that produce the same exit code as was originally present.
 """.strip()
 )
-@click.option("--debug", default=False, is_flag=True)
-@click.option("--quiet", default=False, is_flag=True)
+@click.option("--debug", default=False, is_flag=True, help=(
+    "Emit (extremely verbose) debug output while shrinking"
+))
+@click.option(
+    "--quiet", default=False, is_flag=True, help=(
+        "Emit no output at all while shrinking"))
 @click.option(
     "--backup", default='', help=(
         "Name of the backup file to create. Defaults to adding .bak to the "
@@ -80,8 +87,6 @@ def shrinker(debug, quiet, backup, filename, test, shrinks):
     with open(filename, 'rb') as o:
         initial = o.read()
 
-    initial_label = classify(initial)
-
     if debug:
         volume = Volume.debug
     elif quiet:
@@ -89,23 +94,41 @@ def shrinker(debug, quiet, backup, filename, test, shrinks):
     else:
         volume = Volume.normal
 
-    def shrink_callback(string, status):
+    def name_for_status(status):
         *base, ext = os.path.basename(filename).split(os.extsep, 1)
         base = os.extsep.join(base)
         if base:
-            name = os.path.extsep.join(((base + "-%r" % (status,), ext)))
+            return os.path.extsep.join(((base + "-%r" % (status,), ext)))
         else:
-            name = ext + "-%r" % (status,)
-        with open(os.path.join(shrinks, name), 'wb') as o:
+            return ext + "-%r" % (status,)
+
+    def shrink_callback(string, status):
+        with open(os.path.join(shrinks, name_for_status(status)), 'wb') as o:
             o.write(string)
 
-    best = shrink(
+    shrinker = Shrinker(
         initial, classify, volume=volume,
         shrink_callback=shrink_callback, printer=click.echo
     )
-    os.rename(filename, backup)
-    with open(filename, 'wb') as o:
-        o.write(best[initial_label])
+    initial_label = shrinker.classify(initial)
+    # Go through the old shrunk files. This both reintegrates them into our
+    # current shrink state so we can resume and also lets us clear out old bad
+    # examples.
+    for f in os.listdir(shrinks):
+        path = os.path.join(shrinks, f)
+        if not os.path.isfile(path):
+            continue
+        with open(path, 'rb') as i:
+            contents = i.read()
+        if name_for_status(shrinker.classify(contents)) != f:
+            shrinker.debug("Clearing out defunct %r file" % (f,))
+            os.unlink(path)
+    try:
+        shrinker.shrink()
+    finally:
+        os.rename(filename, backup)
+        with open(filename, 'wb') as o:
+            o.write(shrinker.best[initial_label])
 
 
 if __name__ == '__main__':

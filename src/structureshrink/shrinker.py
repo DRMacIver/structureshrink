@@ -24,12 +24,15 @@ ALPHABET = [bytes([b]) for b in range(256)]
 
 class Shrinker(object):
     def __init__(
-        self, initial, criterion, preprocess, shrink_callback, printer, volume,
+        self,
+        initial, classify, *,
+        preprocess=None, shrink_callback=None, printer=None,
+        volume=Volume.quiet
     ):
-        self.__shrink_callback = shrink_callback or (lambda s: None)
+        self.__shrink_callback = shrink_callback or (lambda s, r: None)
         self.__printer = printer or (lambda s: None)
         self.__inital = initial
-        self.__criterion = criterion
+        self.__classify = classify
         self.__preprocess = preprocess or (lambda s: s)
         self.__volume = volume
 
@@ -42,7 +45,7 @@ class Shrinker(object):
         preprocessed = self.__preprocess(initial)
         if preprocessed is None:
             raise ValueError("Initial example is rejected by preprocessing")
-        label = self.criterion(preprocessed)
+        label = self.classify(preprocessed)
         self.output("Initial example: %s, labelled %r" % ((
             "%d initial" % (len(initial),)
             if initial == preprocessed
@@ -62,7 +65,7 @@ class Shrinker(object):
     def best(self):
         return self.__best
 
-    def criterion(self, string):
+    def classify(self, string):
         key = cache_key(string)
         try:
             return self.__cache[key]
@@ -81,7 +84,7 @@ class Shrinker(object):
             try:
                 result = self.__cache[preprocess_key]
             except KeyError:
-                result = self.__criterion(preprocessed)
+                result = self.__classify(preprocessed)
             if (
                 result not in self.best or
                 sort_key(string) < sort_key(self.best[result])
@@ -135,7 +138,7 @@ class Shrinker(object):
             for label, current in options:
                 if not current:
                     continue
-                if self.criterion(b'') == label:
+                if self.classify(b'') == label:
                     continue
 
                 initial_shrinks = self.shrinks
@@ -143,13 +146,13 @@ class Shrinker(object):
                     label, len(current)))
 
                 if len(current) <= 2:
-                    _smallmin(current, lambda b: self.criterion(b) == label)
+                    _smallmin(current, lambda b: self.classify(b) == label)
 
                 lo = 0
                 hi = len(current)
                 while lo + 1 < hi:
                     mid = (lo + hi) // 2
-                    if self.criterion(current[:mid]) == label:
+                    if self.classify(current[:mid]) == label:
                         hi = mid
                     else:
                         lo = mid
@@ -166,7 +169,7 @@ class Shrinker(object):
                             ngram, len(initial), min(map(len, initial))))
                     final = _lsmin(
                         initial,
-                        lambda ls: self.criterion(ngram.join(ls)) == label
+                        lambda ls: self.classify(ngram.join(ls)) == label
                     )
                     if final != initial:
                         self.debug("Deleted %d parts" % (
@@ -183,7 +186,7 @@ class Shrinker(object):
                     self.debug("Attempting to minimize ngram %r" % (
                         ngram,))
                     minigram = _bytemin(
-                        ngram, lambda ls: self.criterion(
+                        ngram, lambda ls: self.classify(
                             ls.join(initial)
                         ) == label
                     )
@@ -197,7 +200,7 @@ class Shrinker(object):
 
                 self.debug("Minimizing by bytes")
                 _bytemin(
-                    self.best[label], lambda b: self.criterion(b) == label)
+                    self.best[label], lambda b: self.classify(b) == label)
                 if initial_shrinks != self.shrinks:
                     continue
                 width = 16
@@ -206,7 +209,7 @@ class Shrinker(object):
                     while i + width <= len(self.best[label]):
                         c = self.best[label]
                         d = c[:i] + c[i + width:]
-                        if self.criterion(d) != label:
+                        if self.classify(d) != label:
                             i += 1
                         else:
                             assert d == self.best[label]
@@ -252,13 +255,13 @@ def score(splitter, string):
         return (-min(map(len, bits)), len(bits))
 
 
-def _smallmin(string, criterion):
+def _smallmin(string, classify):
     assert len(string) <= 2
     # A bunch of small example optimizations. They're mostly not
     # hit but can be a huge time saver when they are.
     if len(string) <= 2:
         for a in ALPHABET:
-            if criterion(a):
+            if classify(a):
                 return a
         assert len(string) == 2
         for a in ALPHABET:
@@ -266,7 +269,7 @@ def _smallmin(string, criterion):
                 c = a + b
                 if c >= string:
                     break
-                if criterion(c):
+                if classify(c):
                     return c
 
 
@@ -343,15 +346,8 @@ def _quadmin(ls, criterion):
     return ls
 
 
-def shrink(
-    initial, criterion, *,
-    preprocess=None, shrink_callback=None, printer=None,
-    volume=Volume.quiet
-):
-    """Attempt to find a minimal version of initial that satisfies criterion"""
-    shrinker = Shrinker(
-        initial, criterion, shrink_callback=shrink_callback,
-        printer=printer, preprocess=preprocess, volume=volume,
-    )
+def shrink(*args, **kwargs):
+    """Attempt to find a minimal version of initial that satisfies classify"""
+    shrinker = Shrinker(*args, **kwargs)
     shrinker.shrink()
     return shrinker.best

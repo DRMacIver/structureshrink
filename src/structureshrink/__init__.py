@@ -1,3 +1,3 @@
-from structureshrink.shrinker import shrink, Volume
+from structureshrink.shrinker import shrink, Volume, Shrinker
 
-__all__ = ['shrink', 'Volume']
+__all__ = ['shrink', 'Volume', 'Shrinker']
