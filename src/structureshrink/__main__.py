@@ -80,6 +80,8 @@ def shrinker(debug, quiet, backup, filename, test, shrinks):
     with open(filename, 'rb') as o:
         initial = o.read()
 
+    initial_label = classify(initial)
+
     if debug:
         volume = Volume.debug
     elif quiet:
@@ -90,15 +92,20 @@ def shrinker(debug, quiet, backup, filename, test, shrinks):
     def shrink_callback(string, status):
         *base, ext = os.path.basename(filename).split(os.extsep, 1)
         base = os.extsep.join(base)
-        with open(os.path.join(shrinks, os.path.extsep.join((
-            base + "-%r" % (status,), ext
-        ))), 'wb') as o:
+        if base:
+            name = os.path.extsep.join(((base + "-%r" % (status,), ext)))
+        else:
+            name = ext + "-%r" % (status,)
+        with open(os.path.join(shrinks, name), 'wb') as o:
             o.write(string)
 
-    shrink(
+    best = shrink(
         initial, classify, volume=volume,
         shrink_callback=shrink_callback, printer=click.echo
     )
+    os.rename(filename, backup)
+    with open(filename, 'wb') as o:
+        o.write(best[initial_label])
 
 
 if __name__ == '__main__':
