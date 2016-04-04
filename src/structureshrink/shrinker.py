@@ -117,14 +117,15 @@ class Shrinker(object):
         for k in list(ngrams_by_size):
             ngrams_by_size[k] = list(ngrams_by_size[k])
 
+        self.debug("Found %d ngrams" % (
+            sum(len(v) for v in ngrams_by_size.values()),))
+
         for _, grams in reversed(sorted(ngrams_by_size.items())):
             grams = list(filter(None, grams))
             grams.sort(key=lambda s: (score(s, self.best[label]), s))
             for ngram in grams:
                 if len(self.best[label].split(ngram)) > 2:
                     yield ngram
-        self.debug("Found %d ngrams" % (
-            sum(len(v) for v in ngrams_by_size.values()),))
 
     def shrink(self):
         prev = -1

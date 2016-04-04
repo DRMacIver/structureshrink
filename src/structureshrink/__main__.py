@@ -4,6 +4,7 @@ from shutil import which
 import shlex
 import click
 import subprocess
+import time
 
 
 def validate_command(ctx, param, value):
@@ -87,7 +88,8 @@ def shrinker(
             with open(filename, 'wb') as o:
                 o.write(string)
             try:
-                subprocess.check_output(test, timeout=timeout)
+                subprocess.check_output(
+                    test, timeout=timeout, stdin=subprocess.DEVNULL)
                 return 0
             except subprocess.CalledProcessError as e:
                 return e.returncode
@@ -113,9 +115,15 @@ def shrinker(
                 assert isinstance(out, bytes)
                 return out
             except subprocess.TimeoutExpired:
+                shrinker.debug("Timed out while calling preprocessor")
                 return None
             except subprocess.CalledProcessError:
+                shrinker.debug("Error while calling preprocessor")
                 return None
+            finally:
+                if sp.returncode is None:
+                    sp.stdin.close()
+                    sp.kill()
     else:
         preprocessor = None
 
