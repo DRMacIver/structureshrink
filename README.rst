@@ -109,6 +109,20 @@ Usage
 There's a library and a commannd line tool. Neither are what I would describe
 as documented.
 
+To use the command line tool run:
+
+.. code-block::
+
+    python setup.py install
+
+This will require Python 3.4+.
+
+You can now use the structureshrink command.
+
+Usage is that you pass it a file to be shrunk (this will have its contents
+replaced and a backup file created) and a command to run. The results will
+be in the 'shrinks' directory, one per exit status for the command seen.
+
 Development status
 ------------------
 
