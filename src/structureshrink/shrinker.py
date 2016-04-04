@@ -1,5 +1,12 @@
 import hashlib
 from collections import OrderedDict
+from enum import IntEnum
+
+
+class Volume(IntEnum):
+    quiet = 0
+    normal = 1
+    debug = 2
 
 
 def sort_key(s):
@@ -17,15 +24,14 @@ ALPHABET = [bytes([b]) for b in range(256)]
 
 class Shrinker(object):
     def __init__(
-        self, initial, criterion,
-        preprocess=None,
-        shrink_callback=None, debug=None
+        self, initial, criterion, preprocess, shrink_callback, printer, volume,
     ):
         self.__shrink_callback = shrink_callback or (lambda s: None)
-        self.debug = debug or (lambda s: None)
+        self.__printer = printer or (lambda s: None)
         self.__inital = initial
         self.__criterion = criterion
         self.__preprocess = preprocess or (lambda s: s)
+        self.__volume = volume
 
         self.__cache = {}
         self.__preprocess_cache = {}
@@ -37,12 +43,20 @@ class Shrinker(object):
         if preprocessed is None:
             raise ValueError("Initial example is rejected by preprocessing")
         label = self.criterion(preprocessed)
-        self.debug("Initial example: %s, labelled %r" % ((
+        self.output("Initial example: %s, labelled %r" % ((
             "%d initial" % (len(initial),)
             if initial == preprocessed
             else "%d initial (%d preprocessed)" % (
                 len(initial), len(preprocessed))),
             label))
+
+    def output(self, text):
+        if self.__volume >= Volume.normal:
+            self.__printer(text)
+
+    def debug(self, text):
+        if self.__volume >= Volume.debug:
+            self.__printer(text)
 
     @property
     def best(self):
@@ -75,12 +89,12 @@ class Shrinker(object):
                 self.shrinks += 1
                 if self.best:
                     if result not in self.best:
-                        self.debug((
+                        self.output((
                             "Shrink %d: Discovered new label %r"
                             " with %d bytes") % (
                                 self.shrinks, result, len(string)))
                     else:
-                        self.debug(
+                        self.output(
                             "Shrink %d: Label %r now %d bytes (deleted %d)" % (
                                 self.shrinks, result, len(string),
                                 len(self.best[result]) - len(string)))
@@ -106,10 +120,13 @@ class Shrinker(object):
             for ngram in grams:
                 if len(self.best[label].split(ngram)) > 2:
                     yield ngram
+        self.debug("Found %d ngrams" % (
+            sum(len(v) for v in ngrams_by_size.values()),))
 
     def shrink(self):
-        prev = None
+        prev = -1
         while prev != self.shrinks:
+            assert self.shrinks > prev
             prev = self.shrinks
             options = list(self.best.items())
             options.sort(
@@ -118,12 +135,34 @@ class Shrinker(object):
             for label, current in options:
                 if not current:
                     continue
-                self.debug("Shrinking for label %r" % (label,))
+                if self.criterion(b'') == label:
+                    continue
+
+                initial_shrinks = self.shrinks
+                self.output("Shrinking for label %r from %d bytes" % (
+                    label, len(current)))
+
+                if len(current) <= 2:
+                    _smallmin(current, lambda b: self.criterion(b) == label)
+
+                lo = 0
+                hi = len(current)
+                while lo + 1 < hi:
+                    mid = (lo + hi) // 2
+                    if self.criterion(current[:mid]) == label:
+                        hi = mid
+                    else:
+                        lo = mid
+
+                if initial_shrinks != self.shrinks:
+                    continue
+
                 for ngram in self.__suitable_ngrams(label):
                     initial = self.best[label].split(ngram)
                     assert len(initial) > 2
-                    self.debug(
-                        "Splitting by %r into %d parts. Smallest size %d" % (
+                    self.debug((
+                        "Splitting by %r into %d parts. "
+                        "Smallest size %d") % (
                             ngram, len(initial), min(map(len, initial))))
                     final = _lsmin(
                         initial,
@@ -136,13 +175,14 @@ class Shrinker(object):
                     else:
                         self.__useful_ngrams.discard(ngram)
 
-                if prev != self.shrinks:
+                if initial_shrinks != self.shrinks:
                     continue
 
                 for ngram in self.__suitable_ngrams(label):
                     initial = self.best[label].split(ngram)
-                    self.debug("Attempting to minimize %r" % (ngram,))
-                    minigram = bytemin(
+                    self.debug("Attempting to minimize ngram %r" % (
+                        ngram,))
+                    minigram = _bytemin(
                         ngram, lambda ls: self.criterion(
                             ls.join(initial)
                         ) == label
@@ -152,17 +192,25 @@ class Shrinker(object):
                         self.debug(
                             "Shrunk ngram %r -> %r" % (ngram, minigram))
 
-                if prev != self.shrinks:
+                if initial_shrinks != self.shrinks:
                     continue
+
                 self.debug("Minimizing by bytes")
-                bytemin(self.best, lambda b: self.criterion(b) == label)
-                if prev != self.shrinks:
+                _bytemin(
+                    self.best[label], lambda b: self.criterion(b) == label)
+                if initial_shrinks != self.shrinks:
                     continue
-                self.debug("Quadratic minimize by bytes")
-                _quadmin(
-                    list(self.best),
-                    lambda ls: self.criterion(bytes(ls)) == label
-                )
+                width = 16
+                while width > 0:
+                    i = 0
+                    while i + width <= len(self.best[label]):
+                        c = self.best[label]
+                        d = c[:i] + c[i + width:]
+                        if self.criterion(d) != label:
+                            i += 1
+                        else:
+                            assert d == self.best[label]
+                    width -= 1
 
 
 def ngrams(string):
@@ -188,7 +236,7 @@ def ngrams(string):
                 ):
                     # If the ngram always extends to the same thing, remove it
                     assert grams[-1] == ng
-                    assert grams.pop()
+                    grams.pop()
         c += 1
         grams_to_indices = new_grams_to_indices
     grams.reverse()
@@ -204,7 +252,25 @@ def score(splitter, string):
         return (-min(map(len, bits)), len(bits))
 
 
-def bytemin(string, criterion):
+def _smallmin(string, criterion):
+    assert len(string) <= 2
+    # A bunch of small example optimizations. They're mostly not
+    # hit but can be a huge time saver when they are.
+    if len(string) <= 2:
+        for a in ALPHABET:
+            if criterion(a):
+                return a
+        assert len(string) == 2
+        for a in ALPHABET:
+            for b in ALPHABET:
+                c = a + b
+                if c >= string:
+                    break
+                if criterion(c):
+                    return c
+
+
+def _bytemin(string, criterion):
     return bytes(_lsmin(list(string), lambda ls: criterion(bytes(ls))))
 
 
@@ -279,12 +345,13 @@ def _quadmin(ls, criterion):
 
 def shrink(
     initial, criterion, *,
-    preprocess=None, shrink_callback=None, debug=None
+    preprocess=None, shrink_callback=None, printer=None,
+    volume=Volume.quiet
 ):
     """Attempt to find a minimal version of initial that satisfies criterion"""
     shrinker = Shrinker(
         initial, criterion, shrink_callback=shrink_callback,
-        debug=debug, preprocess=preprocess
+        printer=printer, preprocess=preprocess, volume=volume,
     )
     shrinker.shrink()
     return shrinker.best

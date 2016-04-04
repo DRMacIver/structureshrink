@@ -4,8 +4,10 @@ Structured Shrinking
 structureshrink is a program and library that attempts to find structure in a
 file and uses it to produce smaller examples of the same sort of file.
 
-It considers an example smaller if it contains strictly fewer bytes.
-
+It considers an example smaller if it contains strictly fewer bytes, or if it
+has the same number of bytes but is lexicographically smaller treated as a
+sequence of unsigned 8 bit integers (currently structureshrink only does a
+small amount to shrink with regards to the latter)
 
 Multishrinking
 --------------
@@ -50,7 +52,7 @@ We also remember previously useful ngrams and try those even if they don't
 satisfy the criterion for the current string. This allows us to infer structure
 and then make use of it even when it has become less obvious.
 
-Once we have these ngrams we do two things with them:
+Once we have these ngrams we do several things with them:
 
 1. We split the data by the occurrences of each ngram in it. We then try to
    shrink the sequence of splits by the property that joining by the ngram
@@ -72,11 +74,9 @@ time of calculation. These are not updated as we go):
    with the *fewest* splits (because at this stage we're usually more concerned
    with sequence minimizer performance than worst case guarantees).
 
-We also have two additional more naive phases:
+We also have additional more naive phases:
 
 1. Simply apply the sequence shrinking algorithm bytewise to the data
-2. Apply the full quadratic shrink algorithm to the data regardless of its
-   size.
 
 We go through these phases in sequence. Each time a phase produces useful
 changes we go back to the beginning rather than moving on to the next phase.
