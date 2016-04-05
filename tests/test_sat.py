@@ -1,6 +1,6 @@
 from structureshrink.experimental.satshrink import colour_linear_dfa, \
     satshrink
-from hypothesis import given, strategies as st, assume
+from hypothesis import given, strategies as st, assume, example
 
 
 def test_colour_everything_the_same():
@@ -59,6 +59,10 @@ def test_works_for_arbitrary_problems(problem, data):
         assert len(set(newcolouring)) >= len(palette)
 
 
+@example([0] * 3, 2)
+@example([12621, 369859027475, 64320809, -6548852791094311, -63774167], 4)
+@example([0] * 4, 2)
+@example([0] * 2, 2)
 @given(st.lists(st.integers()), st.integers(0, 10))
 def test_find_short_sequence(ls, n):
     assume(n <= len(ls))

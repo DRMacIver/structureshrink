@@ -32,6 +32,8 @@ def satshrink(initial, criterion):
 
     def mark_inconsistent(i, j):
         assert i != j
+        assert 0 <= i <= len(initial)
+        assert 0 <= j <= len(initial)
         inconsistencies.add((i, j))
         inconsistencies.add((j, i))
 
@@ -48,15 +50,17 @@ def satshrink(initial, criterion):
 
     # Do a species of delta debugging to populate some initial inconsistencies.
     i = 0
+    k = n
     while i < n:
         k = (n - i)
         while k > 0:
+            assert i + k <= len(initial)
             if check_consistent(i, i + k):
                 i += k
                 break
-            else:
-                i += 1
-        k // 2
+            k //= 2
+        else:
+            i += 1
 
     best_result = initial
     prev = -1
@@ -65,10 +69,15 @@ def satshrink(initial, criterion):
         assert len(inconsistencies) > prev
         prev = len(inconsistencies)
         colouring = colour_linear_dfa(initial, inconsistencies)
+        assert len(colouring) == len(initial) + 1
+
+        for i, j in inconsistencies:
+            assert colouring[i] != colouring[j]
+
         if len(set(colouring)) == len(nodes):
             assert best_result == initial
             # There is no shorter colouring. This is minimal.
-            break
+            return initial
         # We now have a consistent colouring of our nodes. This means we
         # can build a DFA out of them.
         colours = sorted(set(colouring))
@@ -84,11 +93,6 @@ def satshrink(initial, criterion):
                 assert transitions[character] == nextcolour
             else:
                 transitions[character] = nextcolour
-
-        # Depends whether the final state is equivalent to anything with an
-        # out transition.
-        assert len(colours) <= len(dfa) <= len(colours) + 1
-
         start_state = colouring[0]
         end_state = colouring[n]
         assert start_state != end_state
@@ -104,6 +108,7 @@ def satshrink(initial, criterion):
             # should never be observed empty.
             assert queue
             k, path, state = queue.pop()
+            assert len(path) <= len(initial)
             assert state != end_state
             assert k == len(path)
             for character, next_state in sorted(
@@ -112,7 +117,7 @@ def satshrink(initial, criterion):
                 if next_state == end_state:
                     result = path + [character]
                     break
-                heapq.heappush((
+                heapq.heappush(queue, (
                     k + 1, path + [character], next_state
                 ))
         assert result is not None
@@ -121,6 +126,7 @@ def satshrink(initial, criterion):
         else:
             # We know that start_state and end_state are separate already.
             assert result
+            path = result
             breakdown = {}
             for colour, node in zip(colouring, nodes):
                 breakdown.setdefault(colour, []).append(node)
@@ -149,7 +155,7 @@ def satshrink(initial, criterion):
                 consistent_colour = states[consistent]
                 transition_character = path[consistent]
                 sources = [
-                    i for i in breakdown[consistent_colour]
+                    i + 1 for i in breakdown[consistent_colour]
                     if i < n and initial[i] == transition_character
                 ]
                 assert sources
@@ -164,6 +170,8 @@ def satshrink(initial, criterion):
                             initial[:t] + experiment
                         ):
                             mark_inconsistent(s, t)
+    assert False
+
 
 def colour_linear_dfa(sequence, inconsistencies):
     """Given the linear DFA sequence with known node inconsistencies, provide
