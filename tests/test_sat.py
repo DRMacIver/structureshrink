@@ -19,15 +19,17 @@ def graph_problem(draw):
     sequence = draw(st.lists(alphabet))
     indices = st.integers(0, len(sequence))
     inconsistencies = draw(
-        st.sets(st.tuples(indices, indices))
-    )
+        st.sets(
+            st.tuples(indices, indices),
+            average_size=max(1, (len(sequence) ** 2) / 2)))
     inconsistencies = {t for t in inconsistencies if t[0] != t[1]}
     inconsistencies |= {(v, u) for u, v in inconsistencies}
+    assume(len(inconsistencies) <= 100)
     return sequence, inconsistencies
 
 
 @given(graph_problem(), st.data())
-def test_works_for_arbitrary_problems(problem, data):
+def test_colour_arbitrary_problem(problem, data):
     sequence, inconsistencies = problem
     colouring = colour_linear_dfa(*problem)
     assert len(colouring) == len(sequence) + 1
@@ -40,6 +42,11 @@ def test_works_for_arbitrary_problems(problem, data):
         assert 0 <= u <= len(sequence)
         assert 0 <= v <= len(sequence)
         assert colouring[u] != colouring[v]
+
+    for i in range(len(sequence)):
+        for j in range(len(sequence)):
+            if colouring[i] == colouring[j] and sequence[i] == sequence[j]:
+                assert colouring[i + 1] == colouring[j + 1]
 
     nodes = range(len(sequence) + 1)
 

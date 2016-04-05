@@ -81,18 +81,21 @@ def satshrink(initial, criterion):
         # We now have a consistent colouring of our nodes. This means we
         # can build a DFA out of them.
         colours = sorted(set(colouring))
+        assert colours == list(range(len(colours)))
         assert len(nodes) == len(colouring)
         dfa = {}
         for i, colour in zip(nodes[:-1], colouring):
             assert colour is not None
-            transitions = dfa.setdefault(i, {})
+            transitions = dfa.setdefault(colour, {})
             character = initial[i]
             nextcolour = colouring[i + 1]
+            assert nextcolour in colours
             assert nextcolour is not None
             if character in transitions:
                 assert transitions[character] == nextcolour
             else:
                 transitions[character] = nextcolour
+        assert set(dfa).issubset(set(colours))
         start_state = colouring[0]
         end_state = colouring[n]
         assert start_state != end_state
@@ -102,24 +105,25 @@ def satshrink(initial, criterion):
         result = None
 
         # Queue format: Length of path, value of path, current state
-        queue = [(0, [], start_state)]
+        queue = [(0, [], [start_state])]
         while result is None:
             # This must terminate with reaching an end node so the queue
             # should never be observed empty.
             assert queue
-            k, path, state = queue.pop()
+            k, path, states = heapq.heappop(queue)
+            assert len(states) == len(path) + 1
             assert len(path) <= len(initial)
-            assert state != end_state
             assert k == len(path)
             for character, next_state in sorted(
-                dfa[state].items()
+                dfa[states[-1]].items()
             ):
                 if next_state == end_state:
                     result = path + [character]
                     break
-                heapq.heappush(queue, (
-                    k + 1, path + [character], next_state
-                ))
+                value = (
+                    k + 1, path + [character], states + [next_state]
+                )
+                heapq.heappush(queue, value)
         assert result is not None
         if criterion(result):
             return result
@@ -160,9 +164,11 @@ def satshrink(initial, criterion):
                 ]
                 assert sources
                 targets = breakdown[inconsistent_colour]
+                assert targets
 
                 experiment = initial[suffixes[inconsistent_colour]:]
 
+                check = len(inconsistencies)
                 for s in sources:
                     for t in targets:
                         assert (s, t) not in inconsistencies
@@ -170,6 +176,7 @@ def satshrink(initial, criterion):
                             initial[:t] + experiment
                         ):
                             mark_inconsistent(s, t)
+                assert len(inconsistencies) > check
     assert False
 
 
