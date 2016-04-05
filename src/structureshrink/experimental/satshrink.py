@@ -2,6 +2,7 @@ from tempfile import mkstemp
 import os
 import subprocess
 import heapq
+from collections import Counter
 
 
 def sort_key(ls):
@@ -12,14 +13,11 @@ def satshrink(initial, criterion):
     if not criterion(initial):
         raise ValueError("Initial example does not satisfy criterion")
 
-    empty = initial[:0]
-    if criterion(empty):
-        return empty
+    if criterion([]):
+        return []
 
-    n = len(initial)
-    character_index = {}
-    for i, c in enumerate(initial):
-        character_index.setdefault(c, []).append(i)
+    if len(initial) <= 1:
+        return initial
 
     # Design: We have a graph of len(initial) + nodes labeled  0 through n.
     # We are trying to find a minimal size colouring on it such that every
@@ -28,20 +26,14 @@ def satshrink(initial, criterion):
     # inconsistencies and then farming off to a SAT solver to do the hard
     # work of resolving them for us.
 
+    n = len(initial)
     nodes = range(n + 1)
+    inconsistencies = set()
 
-    # We maintain a list of things which we definitely know aren't the same
-    # colour. This speed
-    forced_colouring = {}
-    forced_colouring[0] = 0
-    forced_colouring[n] = 1
-    inconsistencies = {(0, n)}
-
-    def fix_colour(i):
-        if i in forced_colouring:
-            return
-        if all((i, k) in inconsistencies for k in forced_colouring):
-            forced_colouring[i] = len(forced_colouring)
+    def mark_inconsistent(i, j):
+        assert i != j
+        inconsistencies.add((i, j))
+        inconsistencies.add((j, i))
 
     def check_consistent(i, j):
         if i == j:
@@ -51,10 +43,7 @@ def satshrink(initial, criterion):
         i, j = sorted((i, j))
         if criterion(initial[:i] + initial[j:]):
             return True
-        inconsistencies.add((i, j))
-        inconsistencies.add((j, i))
-        for k in (i, j):
-            fix_colour(k)
+        mark_inconsistent(i, j)
         return False
 
     # Do a species of delta debugging to populate some initial inconsistencies.
@@ -69,20 +58,151 @@ def satshrink(initial, criterion):
                 i += 1
         k // 2
 
-    unsatisfiable = 0
-    satisfiable = n + 1
-
-    # Invariant: There is no valid colouring of size lo, there is a valid
-    # covering of size hi
-
     best_result = initial
+    prev = -1
 
     while True:
-        unsatisfiable = max(unsatisfiable, len(forced_colouring) - 1)
-        assert unsatisfiable < satisfiable
-        if unsatisfiable + 1 == satisfiable:
+        assert len(inconsistencies) > prev
+        prev = len(inconsistencies)
+        colouring = colour_linear_dfa(initial, inconsistencies)
+        if len(set(colouring)) == len(nodes):
+            assert best_result == initial
+            # There is no shorter colouring. This is minimal.
             break
-        maybe_satisfiable = (unsatisfiable + satisfiable) // 2
+        # We now have a consistent colouring of our nodes. This means we
+        # can build a DFA out of them.
+        colours = sorted(set(colouring))
+        assert len(nodes) == len(colouring)
+        dfa = {}
+        for i, colour in zip(nodes[:-1], colouring):
+            assert colour is not None
+            transitions = dfa.setdefault(i, {})
+            character = initial[i]
+            nextcolour = colouring[i + 1]
+            assert nextcolour is not None
+            if character in transitions:
+                assert transitions[character] == nextcolour
+            else:
+                transitions[character] = nextcolour
+
+        # Depends whether the final state is equivalent to anything with an
+        # out transition.
+        assert len(colours) <= len(dfa) <= len(colours) + 1
+
+        start_state = colouring[0]
+        end_state = colouring[n]
+        assert start_state != end_state
+
+        # Great! We now have a DFA. Lets build the minimum path through
+        # it. We use Dijkstra for this, naturally.
+        result = None
+
+        # Queue format: Length of path, value of path, current state
+        queue = [(0, [], start_state)]
+        while result is None:
+            # This must terminate with reaching an end node so the queue
+            # should never be observed empty.
+            assert queue
+            k, path, state = queue.pop()
+            assert state != end_state
+            assert k == len(path)
+            for character, next_state in sorted(
+                dfa[state].items()
+            ):
+                if next_state == end_state:
+                    result = path + [character]
+                    break
+                heapq.heappush((
+                    k + 1, path + [character], next_state
+                ))
+        assert result is not None
+        if criterion(result):
+            return result
+        else:
+            # We know that start_state and end_state are separate already.
+            assert result
+            breakdown = {}
+            for colour, node in zip(colouring, nodes):
+                breakdown.setdefault(colour, []).append(node)
+            start_is_bad = False
+            for p in breakdown[start_state]:
+                if not criterion(initial[p:]):
+                    mark_inconsistent(0, p)
+                    start_is_bad = True
+            if not start_is_bad:
+                suffixes = [max(breakdown[c]) for c in colours]
+                assert suffixes[end_state] == n
+                states = [0]
+                for p in path:
+                    states.append(dfa[states[-1]][p])
+                consistent = 0
+                inconsistent = len(path)
+                while consistent + 1 < inconsistent:
+                    check_consistent = (consistent + inconsistent) // 2
+                    prefix = path[:check_consistent]
+                    suffix = initial[suffixes[states[check_consistent]]:]
+                    if criterion(prefix + suffix):
+                        consistent = check_consistent
+                    else:
+                        inconsistent = check_consistent
+                inconsistent_colour = states[inconsistent]
+                consistent_colour = states[consistent]
+                transition_character = path[consistent]
+                sources = [
+                    i for i in breakdown[consistent_colour]
+                    if i < n and initial[i] == transition_character
+                ]
+                assert sources
+                targets = breakdown[inconsistent_colour]
+
+                experiment = initial[suffixes[inconsistent_colour]:]
+
+                for s in sources:
+                    for t in targets:
+                        assert (s, t) not in inconsistencies
+                        if criterion(initial[:s] + experiment) != criterion(
+                            initial[:t] + experiment
+                        ):
+                            mark_inconsistent(s, t)
+
+def colour_linear_dfa(sequence, inconsistencies):
+    """Given the linear DFA sequence with known node inconsistencies, provide
+    a minimal consistent colouring compatible with these."""
+    n = len(sequence)
+
+    character_index = {}
+    for i, c in enumerate(sequence):
+        character_index.setdefault(c, []).append(i)
+
+    nodes = range(n + 1)
+    no_colouring = 0
+    has_colouring = len(nodes)
+
+    inconsistency_counts = Counter()
+    for i, _ in inconsistencies:
+        inconsistency_counts[i] += 1
+    forced_colouring = {0: 0}
+
+    # First do a greedy colouring that tries to mark a colour for as many
+    # nodes as possible. This lets us break symmetries that might otherwise
+    # cause us problems.
+
+    if inconsistency_counts:
+        while True:
+            extra = [
+                n for n in nodes if all(
+                    (k, n) in inconsistencies for k in forced_colouring)]
+            if not extra:
+                break
+            forced_colouring[
+                max(extra, key=lambda s: (inconsistency_counts[s], s))
+            ] = len(forced_colouring)
+
+    colouring = None
+
+    while no_colouring + 1 < has_colouring:
+        could_have_colouring = (no_colouring + has_colouring) // 2
+
         # We try to construct a colouring of size maybe_satisfiable that
         # satisfies all our known constraints.
 
@@ -91,10 +211,10 @@ def satshrink(initial, criterion):
 
         clauses = []
 
-        colours = range(maybe_satisfiable)
+        colours = range(could_have_colouring)
 
         def variable(node, colour):
-            return 1 + (node * maybe_satisfiable) + colour
+            return 1 + (node * could_have_colouring) + colour
 
         # First add the fixed colours.
         for node, colour in forced_colouring.items():
@@ -113,7 +233,7 @@ def satshrink(initial, criterion):
                 for c2 in colours:
                     if c1 != c2:
                         clauses.append((
-                            variable(i, c1), -variable(i, c2)
+                            -variable(i, c1), -variable(i, c2)
                         ))
 
         # Now add the known inconsistencies
@@ -129,7 +249,6 @@ def satshrink(initial, criterion):
         # FIXME: This is a really bad number of clauses and we can do
         # better.
         for indices in character_index.values():
-            break
             if len(indices) <= 1:
                 continue
             # ¬(c[i, c1] ^ c[j, c1] ^ c[i + 1, c2] ^ ¬c[j + 1, c2]) ->
@@ -151,106 +270,25 @@ def satshrink(initial, criterion):
         clauses.sort(key=lambda s: (len(s), s))
         result = minisat(clauses)
         if result is None:
-            unsatisfiable = maybe_satisfiable
+            no_colouring = could_have_colouring
         else:
+            has_colouring = could_have_colouring
             colouring = [None] * (n + 1)
             for assignment in result:
                 assert assignment != 0
                 if assignment < 0:
                     continue
                 t = abs(assignment) - 1
-                node = t // maybe_satisfiable
-                colour = t % maybe_satisfiable
+                node = t // could_have_colouring
+                colour = t % could_have_colouring
                 assert node in nodes
                 assert colour in colours
                 if node in forced_colouring:
                     assert forced_colouring[node] == colour
                 colouring[node] = colour
-            # We now have a consistent colouring of our nodes. This means we
-            # can build a DFA out of them.
-            dfa = {}
-            for i, colour in enumerate(initial):
-                assert colour is not None
-                transitions = dfa.setdefault(i, {})
-                character = initial[i]
-                nextcolour = colouring[i + 1]
-                assert nextcolour is not None
-                if character in transitions:
-                    assert transitions[character] == nextcolour
-                else:
-                    transitions[character] = nextcolour
-
-            assert len(transitions) == n
-
-            end_state = colouring[n]
-
-            # Great! We now have a DFA. Lets build the minimum path through
-            # it. We use Dijkstra for this, naturally.
-            result = None
-
-            # Queue format: Length of path, value of path, current state
-            queue = [(0, [], 0)]
-            while True:
-                # This must terminate with reaching an end node so the queue
-                # should never be observed empty.
-                k, path, state = queue.pop()
-                assert state != end_state
-                assert k == len(path)
-                for character, next_state in sorted(
-                    transitions[state].items()
-                ):
-                    if next_state == end_state:
-                        result = next_state
-                        break
-                    heapq.heappush((
-                        k + 1, path + [character], next_state
-                    ))
-            assert result is not None
-            if criterion(result):
-                satisfiable = maybe_satisfiable
-                if sort_key(result) < sort_key(best_result):
-                    best_result = result
-            else:
-                # Not so consistent after all!
-                # We've discovered new transitions that we're not allowed to
-                # make. Now let's find out what they are.
-                path = result
-
-                # After we have read i charracters from path, we are in
-                # states[i]
-                states = [0]
-                for c in path:
-                    states.append(transitions[states[-1]][c])
-                colours_to_indices = {}
-                for i, colour in enumerate(colouring):
-                    colours_to_indices[colour] = i
-                assert colours_to_indices[end_state] == n
-
-                works = 0
-                does_not_work = states[-1]
-                while works + 1 < does_not_work:
-                    maybe_works = (works + does_not_work) // 2
-                    prefix = path[:maybe_works]
-                    state = states[i]
-                    suffix = initial[colours_to_indices[state]:]
-                    if criterion(prefix + suffix):
-                        works = maybe_works
-                    else:
-                        works = does_not_work
-                # So the transition we took works -> does_not_work was bad.
-                bad_colour = states[does_not_work]
-                coloured_indices = [
-                    i for i, c in enumerate(colouring) if c == bad_colour]
-                assert len(coloured_indices) > 1
-                any_bad = False
-                for i in coloured_indices:
-                    for j in coloured_indices:
-                        if not check_consistent(i, j):
-                            any_bad = True
-                assert any_bad
-                # Anything we previously knew about satisfiability is wrong.
-                satisfiable = n + 1
-    return best_result
+    if colouring is None:
+        return list(nodes)
+    return colouring
 
 
 def minisat(clauses):
