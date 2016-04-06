@@ -45,18 +45,6 @@ def satshrink_step(initial, criterion):
 
     mark_inconsistent(0, n)
 
-    # Do a species of delta debugging to populate some initial inconsistencies.
-    k = n - 1
-    while k > 0:
-        i = 0
-        while i + k <= n:
-            ts = initial[:i] + initial[i + k:]
-            if criterion(ts):
-                return ts
-            mark_inconsistent(i, i + k)
-            i += k
-        k //= 2
-
     prev = -1
 
     no_colouring = 1
@@ -79,6 +67,15 @@ def satshrink_step(initial, criterion):
                 n_colours = (1 + n + n_colours) // 2
             else:
                 n_colours *= 2
+        while no_colouring + 1 < n_colours:
+            maybe_n_colours = (n_colours + no_colouring) // 2
+            maybe_colouring = colour_linear_dfa(
+                initial, inconsistencies, maybe_n_colours)
+            if maybe_colouring is not None:
+                n_colours = maybe_n_colours
+                colouring = maybe_colouring
+            else:
+                no_colouring = maybe_n_colours
 
         # We now have a consistent colouring of our nodes. This means we
         # can build a DFA out of them.
@@ -106,6 +103,7 @@ def satshrink_step(initial, criterion):
 
         # Queue format: Length of path, value of path, current state
         queue = [(0, [], [start_state])]
+        visited = set()
         while result is None:
             # This must terminate with reaching an end node so the queue
             # should never be observed empty.
@@ -114,9 +112,11 @@ def satshrink_step(initial, criterion):
             assert len(states) == len(path) + 1
             assert len(path) <= len(initial)
             assert k == len(path)
-            for character, next_state in sorted(
-                dfa[states[-1]].items()
-            ):
+            state = states[-1]
+            if state in visited:
+                continue
+            visited.add(state)
+            for character, next_state in sorted(dfa[state].items()):
                 if next_state == end_state:
                     result = path + [character]
                     break
@@ -125,28 +125,27 @@ def satshrink_step(initial, criterion):
                 )
                 heapq.heappush(queue, value)
         assert result is not None
-        if criterion(result):
+        if len(result) < len(initial) and criterion(result):
             return result
-        else:
-            # Our DFA is clearly wrong. We now either find a shrink or improve
-            # it, whichever comes first.
-            nodes_by_colour = {}
-            for node, colour in zip(nodes, colouring):
-                nodes_by_colour.setdefault(colour, []).append(node)
-            tuples = []
-            for ls in nodes_by_colour.values():
-                if len(ls) == 1:
-                    continue
-                assert ls == sorted(ls)
-                tuples.append((ls[0], ls[-1]))
-            # Largest to smallest
-            tuples.sort(key=lambda x: x[0] - x[1])
-            for i, j in tuples:
-                ts = initial[:i] + initial[j:]
-                if criterion(ts):
-                    return ts
-                assert (i, j) not in inconsistencies
-                mark_inconsistent(i, j)
+        # Our DFA is clearly wrong. We now either find a shrink or improve
+        # it, whichever comes first.
+        nodes_by_colour = {}
+        for node, colour in zip(nodes, colouring):
+            nodes_by_colour.setdefault(colour, []).append(node)
+        tuples = []
+        for ls in nodes_by_colour.values():
+            if len(ls) == 1:
+                continue
+            assert ls == sorted(ls)
+            tuples.append((ls[0], ls[-1]))
+        # Largest to smallest
+        tuples.sort(key=lambda x: x[0] - x[1])
+        for i, j in tuples:
+            ts = initial[:i] + initial[j:]
+            if criterion(ts):
+                return ts
+            assert (i, j) not in inconsistencies
+            mark_inconsistent(i, j)
 
     assert False
 
