@@ -2,39 +2,38 @@ from collections import Counter
 from structureshrink.utils.minisat import minisat
 
 
-def graph_from_edges(edges):
-    edges = set(edges)
+def normalize_edges(edges):
+    edges = {(u, v) for u, v in edges if u != v}
     edges |= {(v, u) for u, v in edges}
-    vertices = sorted({u for t in edges for u in t})
-    edges -= {(v, v) for v in vertices}
-    return vertices, edges
+    return edges
 
 
-def colour_graph(edges):
+def colour_graph(vertices, edges):
     if not edges:
         return {}
+    for result in progressive_colour_graph(vertices, edges):
+        pass
+    return result
 
-    vertices, edges = graph_from_edges(edges)
 
+def progressive_colour_graph(vertices, edges):
+    edges = normalize_edges(edges)
+    vertices = sorted(vertices)
     no_colouring = 0
     has_colouring = len(vertices)
-
-    best_colouring = None
+    yield {v: i for i, v in enumerate(vertices)}
+    if not edges:
+        return
 
     while no_colouring + 1 < has_colouring:
         check_colouring = (no_colouring + has_colouring) // 2
         colouring = colour_graph_with_fixed_vertices(
             vertices, edges, check_colouring)
         if colouring is not None:
-            best_colouring = colouring
+            yield colouring
             has_colouring = check_colouring
         else:
             no_colouring = check_colouring
-    if best_colouring is None:
-        assert has_colouring == len(vertices)
-        return {v: i for i, v in enumerate(vertices)}
-    else:
-        return best_colouring
 
 
 def colour_graph_with_fixed_vertices(vertices, edges, n_colours):

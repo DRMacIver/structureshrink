@@ -1,6 +1,7 @@
 import hashlib
 from collections import OrderedDict
 from enum import IntEnum
+from structureshrink.experimental.satshrink import satshrink
 
 
 class Volume(IntEnum):
@@ -144,6 +145,9 @@ class Shrinker(object):
                     continue
                 if self.classify(b'') == label:
                     continue
+                self.debug("Minimizing by bytes")
+                _bytemin(
+                    self.best[label], lambda b: self.classify(b) == label)
 
                 initial_shrinks = self.shrinks
                 self.output("Shrinking for label %r from %d bytes" % (
@@ -274,6 +278,7 @@ def _bytemin(string, criterion):
 
 
 def _lsmin(ls, criterion):
+    return satshrink(_ddmin(ls, criterion), criterion)
     if criterion([]):
         return []
     if len(ls) < 8:
@@ -288,25 +293,17 @@ def _lsmin(ls, criterion):
 def _ddmin(ls, criterion):
     if not criterion(ls):
         raise ValueError("Initial example does not satisfy condition")
-    prev = None
-    while ls != prev:
-        prev = ls
-        k = len(ls) // 2
-        while k > 0:
-            prev2 = None
-            while prev2 != ls:
-                prev2 = ls
-                i = 0
-                while i + k <= len(ls):
-                    s = ls[:i] + ls[i + k:]
-                    assert len(s) + k == len(ls)
-                    if criterion(s):
-                        ls = s
-                        if i > 0:
-                            i -= 1
-                    else:
-                        i += k
-            k //= 2
+    k = len(ls) - 1
+    while k > 0:
+        i = 0
+        while i + k <= len(ls):
+            ts = ls[:i] + ls[i + k:]
+            if criterion(ts):
+                ls = ts
+                k = len(ls) - i - 1
+            else:
+                i += k
+        k //= 2
     return ls
 
 

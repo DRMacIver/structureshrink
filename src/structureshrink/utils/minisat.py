@@ -8,6 +8,10 @@ def minisat(clauses):
     if not clauses:
         return []
 
+    for clause in clauses:
+        if 0 in clause:
+            raise ValueError("Illegal clause %r" % (clause,))
+
     n_variables = max(max(abs(c) for c in cs) for cs in clauses)
     n_clauses = len(clauses)
 
@@ -30,7 +34,7 @@ def minisat(clauses):
 
         try:
             subprocess.check_output([
-                "minisat", satfilename, outfilename,
+                "minisat", "-mem-lim=500", satfilename, outfilename,
             ])
             return None
         except subprocess.CalledProcessError as e:
