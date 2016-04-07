@@ -1,7 +1,6 @@
 import hashlib
 from collections import OrderedDict
 from enum import IntEnum
-from structureshrink.experimental.satshrink import satshrink
 
 
 class Volume(IntEnum):
@@ -278,7 +277,6 @@ def _bytemin(string, criterion):
 
 
 def _lsmin(ls, criterion):
-    return satshrink(_ddmin(ls, criterion), criterion)
     if criterion([]):
         return []
     if len(ls) < 8:
@@ -298,9 +296,9 @@ def _ddmin(ls, criterion):
         i = 0
         while i + k <= len(ls):
             ts = ls[:i] + ls[i + k:]
+            assert len(ts) < len(ls)
             if criterion(ts):
                 ls = ts
-                k = len(ls) - i - 1
             else:
                 i += k
         k //= 2
