@@ -6,6 +6,7 @@ import click
 import subprocess
 import hashlib
 import sys
+import random
 
 
 def validate_command(ctx, param, value):
@@ -54,6 +55,7 @@ process.
 @click.option(
     '--shrinks', default="shrinks",
     type=click.Path(file_okay=False, resolve_path=True))
+@click.option('--seed', default=None)
 @click.option(
     '--preprocess', default=None, callback=validate_command,
     help=(
@@ -74,10 +76,13 @@ process.
 ), nargs=-1)
 def shrinker(
     debug, quiet, backup, filename, test, shrinks, preprocess, timeout,
-    classify, filenames,
+    classify, filenames, seed,
 ):
     if debug and quiet:
         raise click.UsageError("Cannot have both debug output and be quiet")
+
+    if seed is not None:
+        random.seed(seed)
 
     if not backup:
         backup = filename + os.extsep + "bak"

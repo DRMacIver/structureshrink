@@ -1,6 +1,7 @@
 import hashlib
 from collections import OrderedDict
 from enum import IntEnum
+import random
 
 
 class Volume(IntEnum):
@@ -160,10 +161,13 @@ class Shrinker(object):
                         "Splitting by %r into %d parts. "
                         "Smallest size %d") % (
                             ngram, len(initial), min(map(len, initial))))
-                    _lsmin(
+                    result = _lsmin(
                         initial,
                         lambda ls: self.classify(ngram.join(ls)) == label
                     )
+                    if len(result) < len(initial):
+                        self.debug("Split removed %d parts out of %d" % (
+                            len(initial) - len(result), len(initial)))
 
                 if initial_shrinks != self.shrinks:
                     continue
@@ -236,9 +240,9 @@ def ngrams(string):
                     grams.pop()
         c += 1
         grams_to_indices = new_grams_to_indices
-    grams.sort(
-        key=lambda g: (-len(g), -scores[g], counts[g])
-    )
+    grams.sort(key=sort_key, reverse=True)
+    grams.sort(key=counts.__getitem__)
+    grams.sort(key=lambda s: len(s) + scores[s], reverse=True)
     return grams
 
 
@@ -272,17 +276,63 @@ def _smallmin(string, classify):
 def _bytemin(string, criterion):
     return bytes(_lsmin(list(string), lambda ls: criterion(bytes(ls))))
 
+EXPMIN_THRESHOLD = 6
+QUADMIN_THRESHOLD = 8
+
 
 def _lsmin(ls, criterion):
     if criterion([]):
         return []
-    if len(ls) < 8:
-        return _quadmin(ls, criterion)
-    else:
-        result = _ddmin(ls, criterion)
-        if len(result) < 8:
-            return _quadmin(result, criterion)
-        return result
+    prev = None
+    while len(ls) > 8 and ls != prev:
+        prev = ls
+        ls = _randmin(ls, criterion)
+        ls = _ddmin(ls, criterion)
+    if EXPMIN_THRESHOLD < len(ls) <= QUADMIN_THRESHOLD:
+        ls = _quadmin(ls, criterion)
+    if len(ls) <= EXPMIN_THRESHOLD:
+        ls = _expmin(ls, criterion)
+    return ls
+
+
+def _randmin(ls, criterion):
+    prev = None
+    while len(ls) > 6 and ls != prev:
+        prev = ls
+
+        i = 0
+        while i < len(ls) and len(ls) > 5:
+            while True:
+                j = random.randint(0, len(ls))
+                if abs(j - i) > 2:
+                    break
+            u, v = sorted((i, j))
+            ts = ls[:u] + ls[v:]
+            if criterion(ts):
+                ls = ts
+            else:
+                i += 1
+    return ls
+
+
+def subsets(ls):
+    assert len(ls) <= 10
+    results = []
+    for subset in range(2 ** len(ls)):
+        results.append([
+            t for i, t in enumerate(ls) if subset & (1 << i)
+        ])
+    results.sort(key=len)
+    return results
+
+
+def _expmin(ls, criterion):
+    if not ls:
+        return ls
+    for i, s in enumerate(subsets(ls)):
+        if criterion(s):
+            return s
+    assert False
 
 
 def _ddmin(ls, criterion):
@@ -305,7 +355,7 @@ def _ddmin(ls, criterion):
                         if i > 0:
                             i -= 1
                     else:
-                        i += k
+                        i += max(1, k - 1)
             k //= 2
     return ls
 
