@@ -39,8 +39,6 @@ class Shrinker(object):
         self.__cache = {}
         self.__preprocess_cache = {}
         self.__best = OrderedDict()
-        self.__ngram_scores = {}
-        self.__useful_ngrams = set()
         self.shrinks = 0
         preprocessed = self.__preprocess(initial)
         if preprocessed is None:
@@ -109,24 +107,13 @@ class Shrinker(object):
         return result
 
     def __suitable_ngrams(self, label):
-        ngrams_by_size = {}
         self.debug("Calculating ngrams for %r" % (label,))
 
-        for gs in [self.__useful_ngrams, ngrams(self.best[label])]:
-            for g in gs:
-                ngrams_by_size.setdefault(len(g), set()).add(g)
-        for k in list(ngrams_by_size):
-            ngrams_by_size[k] = list(ngrams_by_size[k])
+        found_ngrams = ngrams(self.best[label])
 
-        self.debug("Found %d ngrams" % (
-            sum(len(v) for v in ngrams_by_size.values()),))
+        self.debug("Found %d ngrams" % len(found_ngrams),)
 
-        for _, grams in reversed(sorted(ngrams_by_size.items())):
-            grams = list(filter(None, grams))
-            grams.sort(key=lambda s: (score(s, self.best[label]), s))
-            for ngram in grams:
-                if len(self.best[label].split(ngram)) > 2:
-                    yield ngram
+        return found_ngrams
 
     def shrink(self):
         prev = -1
@@ -166,17 +153,17 @@ class Shrinker(object):
 
                 for ngram in self.__suitable_ngrams(label):
                     initial = self.best[label].split(ngram)
+                    if len(initial) < len(ngram) + 1:
+                        continue
                     assert len(initial) > 2
                     self.debug((
                         "Splitting by %r into %d parts. "
                         "Smallest size %d") % (
                             ngram, len(initial), min(map(len, initial))))
-                    final = _lsmin(
+                    _lsmin(
                         initial,
                         lambda ls: self.classify(ngram.join(ls)) == label
                     )
-                    if final != initial:
-                        self.__useful_ngrams.add(ngram)
 
                 if initial_shrinks != self.shrinks:
                     continue
@@ -185,13 +172,11 @@ class Shrinker(object):
                     initial = self.best[label].split(ngram)
                     self.debug("Attempting to minimize ngram %r" % (
                         ngram,))
-                    minigram = _bytemin(
+                    _bytemin(
                         ngram, lambda ls: self.classify(
                             ls.join(initial)
                         ) == label
                     )
-                    if minigram != ngram:
-                        self.__useful_ngrams.add(minigram)
 
                 if initial_shrinks != self.shrinks:
                     continue
@@ -216,8 +201,21 @@ def ngrams(string):
     assert isinstance(string, bytes)
     grams_to_indices = {b'': range(len(string))}
     grams = []
+    scores = {}
+    counts = {}
     c = 0
     while grams_to_indices:
+        for gram, indices in grams_to_indices.items():
+            counts[gram] = len(indices)
+            if len(indices) > 1:
+                # A decent approximation to the size of string when splitting
+                # by this ngram. It ignores overlap so isn't quite correct, but
+                # is easier and cheaper to calculate.
+                scores[gram] = min(b - a for a, b in zip(indices, indices[1:]))
+                scores[gram] = min(scores[gram], indices[0])
+                scores[gram] = min(scores[gram], len(string) - indices[-1])
+                assert scores[gram] >= 0
+            scores[gram] = 0
         new_grams_to_indices = {}
         for ng, ls in grams_to_indices.items():
             assert len(ng) == c
@@ -238,7 +236,9 @@ def ngrams(string):
                     grams.pop()
         c += 1
         grams_to_indices = new_grams_to_indices
-    grams.reverse()
+    grams.sort(
+        key=lambda g: (-len(g), -scores[g], counts[g])
+    )
     return grams
 
 
