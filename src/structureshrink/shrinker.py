@@ -273,7 +273,7 @@ def _smallmin(string, classify):
 def _bytemin(string, criterion):
     return bytes(_lsmin(list(string), lambda ls: criterion(bytes(ls))))
 
-EXPMIN_THRESHOLD = 6
+EXPMIN_THRESHOLD = 5
 QUADMIN_THRESHOLD = 8
 
 
