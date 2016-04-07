@@ -109,11 +109,8 @@ class Shrinker(object):
 
     def __suitable_ngrams(self, label):
         self.debug("Calculating ngrams for %r" % (label,))
-
         found_ngrams = ngrams(self.best[label])
-
         self.debug("Found %d ngrams" % len(found_ngrams),)
-
         return found_ngrams
 
     def shrink(self):
@@ -240,9 +237,7 @@ def ngrams(string):
                     grams.pop()
         c += 1
         grams_to_indices = new_grams_to_indices
-    grams.sort(key=sort_key, reverse=True)
-    grams.sort(key=counts.__getitem__)
-    grams.sort(key=lambda s: len(s) + scores[s], reverse=True)
+    grams.sort(key=lambda s: (len(s), scores[s], -counts[s]), reverse=True)
     return grams
 
 
