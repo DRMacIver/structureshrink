@@ -123,6 +123,8 @@ def shrinker(
                     result = 0
                 except subprocess.CalledProcessError as e:
                     result = e.returncode
+                except subprocess.TimeoutExpired:
+                    return "timeout"
             finally:
                 try:
                     os.remove(filename)
