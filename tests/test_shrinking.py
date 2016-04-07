@@ -1,16 +1,19 @@
-from structureshrink import shrink, Volume
+from structureshrink import shrink
 from hypothesis import given, strategies as st
 import hashlib
 
 
-@given(st.binary())
-def test_partition_by_length(b):
+@given(st.binary(), st.random_module())
+def test_partition_by_length(b, _):
     shrunk = shrink(b, len)
     assert len(shrunk) == len(b) + 1
 
 
-@given(st.lists(st.binary(min_size=1, max_size=4), min_size=1, max_size=5))
-def test_shrink_to_any_substring(ls):
+@given(
+    st.lists(st.binary(min_size=1, max_size=4), min_size=1, max_size=5),
+    st.random_module()
+)
+def test_shrink_to_any_substring(ls, _):
     shrunk = shrink(
         b''.join(ls), lambda x: sum(l in x for l in ls)
     )

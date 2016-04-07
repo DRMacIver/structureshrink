@@ -153,7 +153,7 @@ class Shrinker(object):
                     initial = self.best[label].split(ngram)
                     if len(initial) < len(ngram) + 1:
                         continue
-                    assert len(initial) > 2
+                    assert len(initial) >= 2
                     self.debug((
                         "Splitting by %r into %d parts. "
                         "Smallest size %d") % (
@@ -221,7 +221,8 @@ def ngrams(string):
         for ng, ls in grams_to_indices.items():
             assert len(ng) == c
             if len(ls) >= max(2, len(ng)):
-                grams.append(ng)
+                if ng:
+                    grams.append(ng)
                 seen = set()
                 for i in ls:
                     g = string[i:i+len(ng)+1]
@@ -229,6 +230,7 @@ def ngrams(string):
                     if len(g) == c + 1:
                         new_grams_to_indices.setdefault(g, []).append(i)
                 if (
+                    ng and
                     len(seen) == 1 and
                     len(new_grams_to_indices[list(seen)[0]]) >= len(ng) + 1
                 ):
