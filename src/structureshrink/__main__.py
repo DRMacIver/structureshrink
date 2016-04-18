@@ -5,7 +5,9 @@ import shlex
 import click
 import subprocess
 import hashlib
+import signal
 import sys
+import time
 import random
 
 
@@ -23,6 +25,21 @@ def validate_command(ctx, param, value):
             raise click.BadParameter("%s: command not found" % (command,))
         command = os.path.abspath(what)
     return [command] + parts[1:]
+
+
+def interrupt_wait_and_kill(sp):
+    if sp.returncode is None:
+        # In case the subprocess forked. Python might hang if you don't close
+        # all pipes.
+        for pipe in [sp.stdout, sp.stderr, sp.stdin]:
+            if pipe:
+                pipe.close()
+        sp.send_signal(signal.SIGINT)
+        for _ in range(10):
+            if sp.poll() is not None:
+                return
+            time.sleep(0.1)
+        sp.kill()
 
 
 @click.command(
@@ -103,28 +120,30 @@ def shrinker(
         if filename == '-':
             sp = subprocess.Popen(
                 test, stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL, universal_newlines=False
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                universal_newlines=False
             )
             try:
                 sp.communicate(string, timeout=timeout)
             finally:
-                if sp.returncode is None:
-                    sp.stdin.close()
-                    sp.kill()
+                interrupt_wait_and_kill(sp)
             result = sp.returncode
         else:
             try:
                 os.rename(filename, backup)
                 with open(filename, 'wb') as o:
                     o.write(string)
+                sp = subprocess.Popen(
+                    test, stdout=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, universal_newlines=False
+                )
                 try:
-                    subprocess.check_output(
-                        test, timeout=timeout, stdin=subprocess.DEVNULL)
-                    result = 0
-                except subprocess.CalledProcessError as e:
-                    result = e.returncode
+                    sp.communicate(timeout=timeout)
                 except subprocess.TimeoutExpired:
                     return "timeout"
+                finally:
+                    interrupt_wait_and_kill(sp)
+                return sp.returncode
             finally:
                 try:
                     os.remove(filename)
@@ -160,7 +179,8 @@ def shrinker(
         def preprocessor(string):
             sp = subprocess.Popen(
                 preprocess, stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE, universal_newlines=False
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                universal_newlines=False,
             )
             try:
                 out, _ = sp.communicate(string, timeout=timeout)
@@ -173,9 +193,7 @@ def shrinker(
                 shrinker.debug("Error while calling preprocessor")
                 return None
             finally:
-                if sp.returncode is None:
-                    sp.stdin.close()
-                    sp.kill()
+                interrupt_wait_and_kill(sp)
     else:
         preprocessor = None
 
