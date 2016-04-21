@@ -144,9 +144,6 @@ class Shrinker(object):
                     continue
                 if self.classify(b'') == label:
                     continue
-                self.debug("Minimizing by bytes")
-                _bytemin(
-                    self.best[label], lambda b: self.classify(b) == label)
 
                 initial_shrinks = self.shrinks
                 self.output("Shrinking for label %r from %d bytes" % (
