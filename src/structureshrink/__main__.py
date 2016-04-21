@@ -98,6 +98,7 @@ def shrinker(
         if filename == '-':
             sp = subprocess.Popen(
                 test, stdin=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL, universal_newlines=False
             )
             try:
@@ -114,7 +115,9 @@ def shrinker(
                     o.write(string)
                 try:
                     subprocess.check_output(
-                        test, timeout=timeout, stdin=subprocess.DEVNULL)
+                        test, timeout=timeout, stdin=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
                     result = 0
                 except subprocess.CalledProcessError as e:
                     result = e.returncode
