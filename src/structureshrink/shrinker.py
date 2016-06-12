@@ -98,10 +98,18 @@ class Shrinker(object):
                             " with %d bytes") % (
                                 self.shrinks, result, len(string)))
                     else:
+                        deletes = len(self.best[result]) - len(string)
+                        if deletes == 0:
+                            shrink_message = "lowered %d" % (
+                                len([1 for u, v in zip(
+                                    string, self.best[result]) if u < v]),)
+                        else:
+                            shrink_message = "deleted %d" % (deletes,)
+
                         self.output(
-                            "Shrink %d: Label %r now %d bytes (deleted %d)" % (
+                            "Shrink %d: Label %r now %d bytes (%s)" % (
                                 self.shrinks, result, len(string),
-                                len(self.best[result]) - len(string)))
+                                shrink_message))
                 self.__shrink_callback(string, result)
                 self.__best[result] = string
         for k in keys:
