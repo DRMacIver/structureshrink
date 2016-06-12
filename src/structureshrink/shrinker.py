@@ -271,31 +271,17 @@ class Shrinker(object):
                 self.bracket_shrink(
                     self.best[label], lambda c: self.classify(c) == label
                 )
-                
-                self.debug("Minimizing alphabet")
-                current = self.best[label]
-                characters = sorted(set(current))
-                for a in characters:
-                    for b in characters:
-                        current = self.best[label]
-                        if a < b and current.count(a) > 1:
-                            test = self.shrinks
-                            self.classify(bytes(
-                                a if u == b else u for u in current 
-                            ))
-                            if self.shrinks != test:
-                                self.debug("%r -> %r" % (
-                                    bytes([b]), bytes([a])))
 
                 if initial_shrinks != self.shrinks:
                     continue
+
                 self.debug("Minimizing by bytes")
                 _bytemin(
                     self.best[label], lambda b: self.classify(b) == label)
-                if initial_shrinks != self.shrinks:
-                    continue
+
                 width = 16
                 while width > 0:
+                    self.debug("Deleting intervals of width %d" % (width,))
                     i = 0
                     while i + width <= len(self.best[label]):
                         c = self.best[label]
@@ -303,6 +289,31 @@ class Shrinker(object):
                         self.classify(d)
                         i += 1
                     width -= 1
+
+                current = self.best[label]
+                characters = sorted(set(current))
+                self.debug("Minimizing alphabet of %d characters" % (
+                    len(characters),
+                ))
+                for a in characters:
+                    if self.best[label].count(a) <= 1:
+                        continue
+                    for b in characters:
+                        current = self.best[label]
+                        if a < b:
+                            test = self.shrinks
+                            self.classify(bytes(
+                                a if u == b else u for u in current 
+                            ))
+                            if self.shrinks != test:
+                                self.debug("%r -> %r" % (
+                                    bytes([b]), bytes([a])))
+                new_size = len(set(self.best[label]))
+                if new_size < len(characters):
+                    self.debug("Minimized alphabet to %d characters" % (
+                        new_size,
+                    ))
+
 
 
 def ngrams(string):
