@@ -1,5 +1,5 @@
 import hashlib
-from collections import OrderedDict
+from collections import OrderedDict, Counter
 from enum import IntEnum
 import random
 
@@ -114,6 +114,45 @@ class Shrinker(object):
         self.debug("Found %d ngrams" % len(found_ngrams),)
         return found_ngrams
 
+    def bracket_shrink(self, string, criterion, threshold=1.0):
+        prev = None
+        while prev != string:
+            prev = string
+            for l, r in detect_possible_brackets(string):
+                intervals = intervals_for_brackets(string, l, r)
+                if intervals is None:
+                    continue
+                intervals.sort(
+                    key=lambda x: (x[0] - x[1], x[0]))
+                self.debug("Shrinking for bracketed pair %r, %r" % (
+                    bytes([l]), bytes([r])
+                ))
+                changed = True
+                while changed:
+                    changed = False
+                    i = 0
+                    while i < len(intervals):
+                        u, v = intervals[i]
+                        for t in [
+                            string[:u] + string[v:],
+                            string[:u + 1] + string[v - 1:],
+                            string[:u] + string[u+1:v-1]  + string[v:],
+                        ]:
+                            if (
+                                len(t) < len(string) * threshold and
+                                criterion(t)
+                            ):
+                                string = t
+                                intervals = intervals_for_brackets(
+                                    string, l, r)
+                                changed = True
+                                break
+                        else:
+                            i += 1
+                        if intervals is None:
+                            break
+        return string
+
     def shrink(self):
         prev = -1
         while prev != self.shrinks:
@@ -134,6 +173,17 @@ class Shrinker(object):
                     continue
 
                 initial_shrinks = self.shrinks
+
+                # We do an initial bracket shrink pass with a threshold close
+                # but not exactly 1. This catches a lot of potential for coarse
+                # deletion of blocks but the fact that we enforce an
+                # exponential shrink prevents us from getting distracted by a
+                # bunch of tiny shrinks here.
+                self.bracket_shrink(
+                    self.best[label], lambda c: self.classify(c) == label,
+                    threshold=0.99
+                )
+
                 self.output("Shrinking for label %r from %d bytes" % (
                     label, len(current)))
 
@@ -172,16 +222,31 @@ class Shrinker(object):
                     initial = result
                     self.debug("Attempting to minimize ngram %r" % (
                         ngram,))
+                    ngram = self.bracket_shrink(
+                        ngram, lambda ls: self.classify(
+                            ls.join(initial)
+                        ) == label
+                    )
+                    self.debug("Minimizing ngram with pure deletion")
                     result = _bytemin(
                         ngram, lambda ls: self.classify(
                             ls.join(initial)
                         ) == label
                     )
-                    self.debug("Minimized ngram %r to %r" % (ngram, result))
+                    if ngram != result:
+                        self.debug("Minimized ngram %r to %r" % (
+                            ngram, result))
 
                 if initial_shrinks != self.shrinks:
                     continue
 
+                self.debug("Minimizing bracketwise")
+                self.bracket_shrink(
+                    self.best[label], lambda c: self.classify(c) == label
+                )
+                
+                if initial_shrinks != self.shrinks:
+                    continue
                 self.debug("Minimizing by bytes")
                 _bytemin(
                     self.best[label], lambda b: self.classify(b) == label)
@@ -396,3 +461,32 @@ def shrink(*args, **kwargs):
     shrinker = Shrinker(*args, **kwargs)
     shrinker.shrink()
     return shrinker.best
+
+
+def intervals_for_brackets(string, l, r):
+    intervals = []
+    stack = []
+    for i, c in enumerate(string):
+        if c == l:
+            stack.append(i)
+        elif c == r:
+            if stack:
+                intervals.append((stack.pop(), i + 1))
+            else:
+                return None
+    return intervals
+
+
+def detect_possible_brackets(string):
+    counts = Counter(string)
+    reverse_counts = {}
+    for v, n in counts.items():
+        if n > 1:
+            reverse_counts.setdefault(n, []).append(v)
+    return sorted([
+        (a, b)
+        for ls in reverse_counts.values()
+        for a in ls
+        for b in ls
+        if string.index(a) < string.index(b)
+    ], key=lambda x: counts[x[0]], reverse=True)
