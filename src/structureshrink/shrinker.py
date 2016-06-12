@@ -508,6 +508,8 @@ def intervals_for_brackets(string, l, r):
                 intervals.append((stack.pop(), i + 1))
             else:
                 return None
+    if stack:
+        return None
     return intervals
 
 
