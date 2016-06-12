@@ -153,6 +153,29 @@ class Shrinker(object):
                             break
         return string
 
+
+    def compress_runs(self, string, criterion):
+        for c in range(256):
+            if c not in string:
+                continue
+            compressed = bytearray()
+            seen_c = False
+            for b in string:
+                if b == c:
+                    if not seen_c:
+                        seen_c = True
+                        compressed.append(b)
+                else:
+                    seen_c = False
+                    compressed.append(b)
+            compressed = bytes(compressed)
+            if compressed != string:
+                self.debug("Compressing runs of %r" % (bytes([c]),))
+                if criterion(compressed):
+                    string = compressed
+        return string
+
+
     def shrink(self):
         prev = -1
         while prev != self.shrinks:
@@ -171,8 +194,20 @@ class Shrinker(object):
                     continue
                 if self.classify(b'') == label:
                     continue
+                self.output("Shrinking for label %r from %d bytes" % (
+                    label, len(current)))
+
+                if len(current) <= 2:
+                    _smallmin(current, lambda b: self.classify(b) == label)
+                    continue
 
                 initial_shrinks = self.shrinks
+
+                def criterion(string):
+                    return self.classify(string) == label
+
+                self.debug("Compressing runs")
+                self.compress_runs(self.best[label], criterion)
 
                 # We do an initial bracket shrink pass with a threshold close
                 # but not exactly 1. This catches a lot of potential for coarse
@@ -180,15 +215,11 @@ class Shrinker(object):
                 # exponential shrink prevents us from getting distracted by a
                 # bunch of tiny shrinks here.
                 self.bracket_shrink(
-                    self.best[label], lambda c: self.classify(c) == label,
-                    threshold=0.99
+                    self.best[label], criterion, threshold=0.99
                 )
 
-                self.output("Shrinking for label %r from %d bytes" % (
-                    label, len(current)))
-
-                if len(current) <= 2:
-                    _smallmin(current, lambda b: self.classify(b) == label)
+                if initial_shrinks != self.shrinks:
+                    continue
 
                 lo = 0
                 hi = len(current)
