@@ -28,7 +28,7 @@ class Shrinker(object):
         self,
         initial, classify, *,
         preprocess=None, shrink_callback=None, printer=None,
-        volume=Volume.quiet
+        volume=Volume.quiet, principal_only=False
     ):
         self.__shrink_callback = shrink_callback or (lambda s, r: None)
         self.__printer = printer or (lambda s: None)
@@ -52,6 +52,7 @@ class Shrinker(object):
                 len(initial), len(preprocessed))),
             label))
         self.__initial_label = label
+        self.principal_only = principal_only
 
     def output(self, text):
         if self.__volume >= Volume.normal:
@@ -126,6 +127,8 @@ class Shrinker(object):
             options.sort(key=lambda lr: lr[0] != self.__initial_label)
             for label, current in options:
                 if not current:
+                    continue
+                if self.principal_only and self.__initial_label != label:
                     continue
                 if self.classify(b'') == label:
                     continue

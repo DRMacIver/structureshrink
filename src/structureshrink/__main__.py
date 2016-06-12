@@ -62,6 +62,11 @@ process.
 @click.option("--debug", default=False, is_flag=True, help=(
     "Emit (extremely verbose) debug output while shrinking"
 ))
+@click.option("--principal", default=False, is_flag=True, help=(
+    "When set will only try to shrink examples that classify the same as the "
+    "initial example (other values will still be recorded but it will not make"
+    " any deliberate attempts to shrink them)."
+))
 @click.option(
     "--quiet", default=False, is_flag=True, help=(
         "Emit no output at all while shrinking"))
@@ -93,7 +98,7 @@ process.
 ), nargs=-1)
 def shrinker(
     debug, quiet, backup, filename, test, shrinks, preprocess, timeout,
-    classify, filenames, seed,
+    classify, filenames, seed, principal
 ):
     if debug and quiet:
         raise click.UsageError("Cannot have both debug output and be quiet")
@@ -228,7 +233,7 @@ def shrinker(
     shrinker = Shrinker(
         initial, classify_data, volume=volume,
         shrink_callback=shrink_callback, printer=click.echo,
-        preprocess=preprocessor,
+        preprocess=preprocessor, principal_only=principal,
     )
     initial_label = shrinker.classify(initial)
     # Go through the old shrunk files. This both reintegrates them into our
