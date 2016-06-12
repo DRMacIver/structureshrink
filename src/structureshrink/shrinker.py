@@ -338,7 +338,7 @@ def ngrams(string):
         new_grams_to_indices = {}
         for ng, ls in grams_to_indices.items():
             assert len(ng) == c
-            if len(ls) >= max(2, len(ng)):
+            if len(ls) + 1 >= max(2, len(ng)):
                 if ng:
                     grams.append(ng)
                 seen = set()
