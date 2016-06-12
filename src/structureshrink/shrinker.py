@@ -253,12 +253,6 @@ class Shrinker(object):
                     initial = result
                     self.debug("Attempting to minimize ngram %r" % (
                         ngram,))
-                    ngram = self.bracket_shrink(
-                        ngram, lambda ls: self.classify(
-                            ls.join(initial)
-                        ) == label
-                    )
-                    self.debug("Minimizing ngram with pure deletion")
                     result = _bytemin(
                         ngram, lambda ls: self.classify(
                             ls.join(initial)
