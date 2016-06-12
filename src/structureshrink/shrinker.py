@@ -270,6 +270,21 @@ class Shrinker(object):
                     self.best[label], lambda c: self.classify(c) == label
                 )
                 
+                self.debug("Minimizing alphabet")
+                current = self.best[label]
+                characters = sorted(set(current))
+                for a in characters:
+                    for b in characters:
+                        current = self.best[label]
+                        if a < b and current.count(a) > 1:
+                            test = self.shrinks
+                            self.classify(bytes(
+                                a if u == b else u for u in current 
+                            ))
+                            if self.shrinks != test:
+                                self.debug("%r -> %r" % (
+                                    bytes([b]), bytes([a])))
+
                 if initial_shrinks != self.shrinks:
                     continue
                 self.debug("Minimizing by bytes")
