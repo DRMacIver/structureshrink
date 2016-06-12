@@ -230,9 +230,6 @@ class Shrinker(object):
                     else:
                         lo = mid
 
-                if initial_shrinks != self.shrinks:
-                    continue
-
                 for ngram in self.__suitable_ngrams(label):
                     initial = self.best[label].split(ngram)
                     if len(initial) < len(ngram) + 1:
@@ -261,9 +258,6 @@ class Shrinker(object):
                     if ngram != result:
                         self.debug("Minimized ngram %r to %r" % (
                             ngram, result))
-
-                if initial_shrinks != self.shrinks:
-                    continue
 
                 self.debug("Minimizing bracketwise")
                 self.bracket_shrink(
