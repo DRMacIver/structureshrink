@@ -169,18 +169,15 @@ class Shrinker(object):
                         self.debug("Split removed %d parts out of %d" % (
                             len(initial) - len(result), len(initial)))
 
-                if initial_shrinks != self.shrinks:
-                    continue
-
-                for ngram in self.__suitable_ngrams(label):
-                    initial = self.best[label].split(ngram)
+                    initial = result
                     self.debug("Attempting to minimize ngram %r" % (
                         ngram,))
-                    _bytemin(
+                    result = _bytemin(
                         ngram, lambda ls: self.classify(
                             ls.join(initial)
                         ) == label
                     )
+                    self.debug("Minimized ngram %r to %r" % (ngram, result))
 
                 if initial_shrinks != self.shrinks:
                     continue
@@ -274,6 +271,8 @@ def _smallmin(string, classify):
 
 
 def _bytemin(string, criterion):
+    if criterion(b''):
+        return b''
     return bytes(_lsmin(list(string), lambda ls: criterion(bytes(ls))))
 
 EXPMIN_THRESHOLD = 5
