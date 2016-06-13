@@ -222,8 +222,20 @@ class Shrinker(object):
                 # exponential shrink prevents us from getting distracted by a
                 # bunch of tiny shrinks here.
                 self.bracket_shrink(
-                    self.best[label], criterion, threshold=0.99
-                )
+                    self.best[label], criterion, threshold=0.99)
+
+                brackets = list(detect_possible_brackets(self.best[label]))
+                brackets.sort(key=lambda s: self.best[label].count(s[0]))
+                for l, r in brackets:
+                    if intervals_for_brackets(self.best[label], l, r) is None:
+                        continue
+                    partition = bracket_partition(self.best[label], l, r)
+                    self.debug("Partitioning by bracket %r into %d pieces" % (
+                        bytes([l, r]), len(partition)
+                    ))
+                    _ddmin(
+                        partition, lambda ls: criterion(b''.join(ls))
+                    )
 
                 if initial_shrinks != self.shrinks:
                     continue
@@ -376,6 +388,34 @@ def _smallmin(string, classify):
                     return c
 
 
+def bracket_partition(string, l, r):
+    labels = []
+    count = 0
+    for c in string:
+        if c == l:
+            count += 1
+        elif c == r:
+            count -= 1
+            assert count >= 0
+        labels.append(count > 0)
+    assert len(labels) == len(string)
+    prev_label = None
+    current = bytearray()
+    result = []
+    for c, label in zip(string, labels):
+        if label != prev_label:
+            if current:
+                result.append(bytes(current))
+            current.clear()
+            current.append(c)
+            prev_label = label
+        else:
+            current.append(c)
+    if current:
+        result.append(bytes(current))
+    assert b''.join(result) == string
+    assert b'' not in result
+    return result
 
 
 def _bytemin(string, criterion):
