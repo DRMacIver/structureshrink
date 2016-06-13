@@ -268,6 +268,14 @@ def shrinker(
                     "Reusing previous %d byte example for label %r" % (
                         len(contents), status
                     ))
+        for f in os.listdir(history):
+            path = os.path.join(history, f)
+            if not os.path.isfile(path):
+                continue
+            with open(path, 'rb') as i:
+                contents = i.read()
+            shrinker.classify(contents)
+
         for filepath in filenames:
             with open(filepath, 'rb') as i:
                 value = i.read()
