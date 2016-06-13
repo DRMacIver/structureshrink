@@ -1,7 +1,6 @@
 import hashlib
 from collections import OrderedDict, Counter
 from enum import IntEnum
-import random
 
 
 class Volume(IntEnum):
@@ -247,7 +246,7 @@ class Shrinker(object):
                         "Splitting by %r into %d parts. "
                         "Smallest size %d") % (
                             ngram, len(initial), min(map(len, initial))))
-                    result = _lsmin(
+                    result = _ddmin(
                         initial,
                         lambda ls: self.classify(ngram.join(ls)) == label
                     )
@@ -278,17 +277,6 @@ class Shrinker(object):
                 self.debug("Minimizing by bytes")
                 _bytemin(
                     self.best[label], lambda b: self.classify(b) == label)
-
-                width = 16
-                while width > 0:
-                    self.debug("Deleting intervals of width %d" % (width,))
-                    i = 0
-                    while i + width <= len(self.best[label]):
-                        c = self.best[label]
-                        d = c[:i] + c[i + width:]
-                        self.classify(d)
-                        i += 1
-                    width -= 1
 
                 current = self.best[label]
                 characters = sorted(set(current))
@@ -388,78 +376,31 @@ def _smallmin(string, classify):
                     return c
 
 
+
+
 def _bytemin(string, criterion):
-    if criterion(b''):
-        return b''
-    return bytes(_lsmin(list(string), lambda ls: criterion(bytes(ls))))
-
-EXPMIN_THRESHOLD = 5
-QUADMIN_THRESHOLD = 8
-
-
-def _lsmin(ls, criterion):
-    if criterion([]):
-        return []
-    prev = None
-    while len(ls) > 8 and ls != prev:
-        prev = ls
-        ls = _randmin(ls, criterion)
-        ls = _ddmin(ls, criterion)
-    if EXPMIN_THRESHOLD < len(ls) <= QUADMIN_THRESHOLD:
-        ls = _quadmin(ls, criterion)
-    if len(ls) <= EXPMIN_THRESHOLD:
-        ls = _expmin(ls, criterion)
-    return ls
-
-
-def _randmin(ls, criterion):
-    prev = None
-    while len(ls) > 6 and ls != prev:
-        prev = ls
-
-        i = 0
-        while i < len(ls) and len(ls) > 5:
-            while True:
-                j = random.randint(0, len(ls))
-                if abs(j - i) > 2:
-                    break
-            u, v = sorted((i, j))
-            ts = ls[:u] + ls[v:]
-            if criterion(ts):
-                ls = ts
-            else:
-                i += 1
-    return ls
-
-
-def subsets(ls):
-    assert len(ls) <= 10
-    results = []
-    for subset in range(2 ** len(ls)):
-        results.append([
-            t for i, t in enumerate(ls) if subset & (1 << i)
-        ])
-    results.sort(key=len)
-    return results
-
-
-def _expmin(ls, criterion):
-    if not ls:
-        return ls
-    for i, s in enumerate(subsets(ls)):
-        if criterion(s):
-            return s
-    assert False
-
+    return bytes(_ddmin(list(string), lambda ls: criterion(bytes(ls))))
 
 def _ddmin(ls, criterion):
     if not criterion(ls):
         raise ValueError("Initial example does not satisfy condition")
+    if criterion([]):
+        return []
     prev = None
-    while ls != prev:
+    heat = 1
+    while len(ls) > 1:
+        if prev == ls:
+            heat *= 2
+            if heat >= min(16, len(ls)):
+                break 
+        print("Heat", heat)
         prev = ls
         k = len(ls) // 2
         while k > 0:
+            if k > heat:
+                step = k
+            else:
+                step = 1
             prev2 = None
             while prev2 != ls:
                 prev2 = ls
@@ -472,40 +413,13 @@ def _ddmin(ls, criterion):
                         if i > 0:
                             i -= 1
                     else:
-                        i += max(1, k - 1)
-            k //= 2
-    return ls
-
-
-def _quadmin(ls, criterion):
-    prev = None
-    while ls != prev:
-        prev = ls
-        width = 32
-        while width > 0:
-            i = 0
-            while i + width <= len(ls):
-                ts = ls[:i] + ls[i + width:]
-                assert len(ts) < len(ls)
-                if criterion(ts):
-                    ls = ts
-                else:
-                    i += 1
-            width -= 1
-
-        i = 0
-        while i < len(ls):
-            j = 0
-            while j < i:
-                ts = ls[:j] + ls[i:]
-                assert len(ts) < len(ls)
-                if criterion(ts):
-                    ls = ts
-                    i = j
-                    break
-                j += 1
+                        i += step
+            if k >= heat * 2:
+                k //= 2
+            elif k > heat:
+                k = heat
             else:
-                i += 1
+                k -= 1
     return ls
 
 
