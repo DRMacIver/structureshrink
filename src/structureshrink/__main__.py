@@ -109,8 +109,15 @@ def shrinker(
     if not backup:
         backup = filename + os.extsep + "bak"
 
+    history = os.path.join(shrinks, "history")
+
     try:
         os.mkdir(shrinks)
+    except OSError:
+        pass
+
+    try:
+        os.mkdir(history)
     except OSError:
         pass
 
@@ -215,7 +222,7 @@ def shrinker(
     else:
         volume = Volume.normal
 
-    def name_for_status(status):
+    def suffixed_name(status):
         if filename == '-':
             base = ''
             ext = 'example'
@@ -228,7 +235,13 @@ def shrinker(
             return os.path.extsep.join(((ext, "%s" % (status,))))
 
     def shrink_callback(string, status):
-        with open(os.path.join(shrinks, name_for_status(status)), 'wb') as o:
+        with open(os.path.join(shrinks, suffixed_name(status)), 'wb') as o:
+            o.write(string)
+        with open(
+            os.path.join(history, suffixed_name(
+                "%d-%s" % (len(string),  hashlib.sha1(string).hexdigest()[:12])
+            )), 'wb'
+        ) as o:
             o.write(string)
     shrinker = Shrinker(
         initial, classify_data, volume=volume,
@@ -247,7 +260,7 @@ def shrinker(
             with open(path, 'rb') as i:
                 contents = i.read()
             status = shrinker.classify(contents)
-            if name_for_status(status) != f:
+            if suffixed_name(status) != f:
                 shrinker.debug("Clearing out defunct %r file" % (f,))
                 os.unlink(path)
             else:
