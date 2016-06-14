@@ -319,9 +319,9 @@ class Shrinker(object):
 def ngrams(string):
     assert isinstance(string, bytes)
     grams_to_indices = {b'': range(len(string))}
-    grams = []
     scores = {}
     counts = {}
+    grams_by_count = {}
     c = 0
     while grams_to_indices:
         for gram, indices in grams_to_indices.items():
@@ -340,23 +340,51 @@ def ngrams(string):
             assert len(ng) == c
             if len(ls) + 1 >= max(2, len(ng)):
                 if ng:
-                    grams.append(ng)
+                    grams_by_count.setdefault(len(ls), []).append(ng)
                 seen = set()
                 for i in ls:
                     g = string[i:i+len(ng)+1]
                     seen.add(g)
                     if len(g) == c + 1:
                         new_grams_to_indices.setdefault(g, []).append(i)
-                if (
-                    ng and
-                    len(seen) == 1 and
-                    len(new_grams_to_indices[list(seen)[0]]) >= len(ng) + 1
-                ):
-                    # If the ngram always extends to the same thing, remove it
-                    assert grams[-1] == ng
-                    grams.pop()
         c += 1
         grams_to_indices = new_grams_to_indices
+    merge_table = {}
+    def find(u):
+        trail = []
+        while True:
+            n = merge_table.setdefault(u, u)
+            if n != u:
+                assert u not in trail
+                trail.append(u)
+                u = n
+            else:
+                break
+        for t in trail:
+            merge_table[t] = u
+        return u
+
+    def union(u, v):
+        u = find(u)
+        v = find(v)
+        if u == v:
+            return
+        u, v = sorted((u, v), key=lambda x: (len(x), x))
+        merge_table[u] = v
+
+    for vs in grams_by_count.values():
+        for v in vs:
+            find(v)
+        vs.sort(key=len)
+        for i, u in enumerate(vs):
+            if len(u) <= 3:
+                continue
+            for v in vs[i+1:]:
+                if len(v) > len(u) + 1:
+                    break
+                if u[:-1] == v[1:] or v[:-1] == u[:1] or u in v or v in u:
+                    union(u, v)
+    grams = list({find(v) for v in merge_table.values()})
     grams.sort(key=lambda s: (len(s), scores[s], -counts[s]), reverse=True)
     return grams
 
