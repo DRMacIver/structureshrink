@@ -455,19 +455,10 @@ def _ddmin(ls, criterion):
     if criterion([]):
         return []
     prev = None
-    heat = 1
     while len(ls) > 1:
-        if prev == ls:
-            heat *= 2
-            if heat >= min(16, len(ls)):
-                break 
         prev = ls
         k = len(ls) // 2
         while k > 0:
-            if k > heat:
-                step = k
-            else:
-                step = 1
             prev2 = None
             while prev2 != ls:
                 prev2 = ls
@@ -480,13 +471,8 @@ def _ddmin(ls, criterion):
                         if i > 0:
                             i -= 1
                     else:
-                        i += step
-            if k >= heat * 2:
-                k //= 2
-            elif k > heat:
-                k = heat
-            else:
-                k -= 1
+                        i += k
+            k //= 2
     return ls
 
 
