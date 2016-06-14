@@ -461,7 +461,6 @@ def _ddmin(ls, criterion):
             heat *= 2
             if heat >= min(16, len(ls)):
                 break 
-        print("Heat", heat)
         prev = ls
         k = len(ls) // 2
         while k > 0:
