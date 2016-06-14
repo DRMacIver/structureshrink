@@ -454,25 +454,17 @@ def _ddmin(ls, criterion):
         raise ValueError("Initial example does not satisfy condition")
     if criterion([]):
         return []
-    prev = None
-    while len(ls) > 1:
-        prev = ls
-        k = len(ls) // 2
-        while k > 0:
-            prev2 = None
-            while prev2 != ls:
-                prev2 = ls
-                i = 0
-                while i + k <= len(ls):
-                    s = ls[:i] + ls[i + k:]
-                    assert len(s) + k == len(ls)
-                    if criterion(s):
-                        ls = s
-                        if i > 0:
-                            i -= 1
-                    else:
-                        i += k
-            k //= 2
+    k = len(ls) // 2
+    while k > 0:
+        i = 0
+        while i + k <= len(ls):
+            s = ls[:i] + ls[i + k:]
+            assert len(s) + k == len(ls)
+            if criterion(s):
+                ls = s
+            else:
+                i += k
+        k //= 2
     return ls
 
 
