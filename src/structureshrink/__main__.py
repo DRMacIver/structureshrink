@@ -27,6 +27,12 @@ def validate_command(ctx, param, value):
     return [command] + parts[1:]
 
 
+def signal_group(sp, signal):
+    gid = os.getpgid(sp.pid)
+    assert gid != os.getgid()
+    os.killpg(gid, signal)
+
+
 def interrupt_wait_and_kill(sp):
     if sp.returncode is None:
         # In case the subprocess forked. Python might hang if you don't close
@@ -34,12 +40,12 @@ def interrupt_wait_and_kill(sp):
         for pipe in [sp.stdout, sp.stderr, sp.stdin]:
             if pipe:
                 pipe.close()
-        sp.send_signal(signal.SIGINT)
+        signal_group(sp, signal.SIGINT)
         for _ in range(10):
             if sp.poll() is not None:
                 return
             time.sleep(0.1)
-        sp.kill()
+        signal_group(sp, signal.SIGKILL)
 
 
 @click.command(
@@ -85,7 +91,7 @@ process.
         "e.g. a code formatter). If this command returns a non-zero exit code "
         "then the example will be skipped altogether."))
 @click.option(
-    '--timeout', default=1, type=click.INT, help=(
+    '--timeout', default=1, type=click.FLOAT, help=(
         "Time out subprocesses after this many seconds. If set to <= 0 then "
         "no timeout will be used."))
 @click.option('--classify', default=None, callback=validate_command)
@@ -133,7 +139,8 @@ def shrinker(
             sp = subprocess.Popen(
                 test, stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                universal_newlines=False
+                universal_newlines=False,
+                preexec_fn=os.setsid,
             )
             try:
                 sp.communicate(string, timeout=timeout)
@@ -147,7 +154,8 @@ def shrinker(
                     o.write(string)
                 sp = subprocess.Popen(
                     test, stdout=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL, universal_newlines=False
+                    stderr=subprocess.DEVNULL, universal_newlines=False,
+                    preexec_fn=os.setsid,
                 )
                 try:
                     sp.communicate(timeout=timeout)
@@ -193,6 +201,7 @@ def shrinker(
                 preprocess, stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                 universal_newlines=False,
+                preexec_fn=os.setsid,
             )
             try:
                 out, _ = sp.communicate(string, timeout=timeout)
@@ -274,6 +283,8 @@ def shrinker(
                 continue
             with open(path, 'rb') as i:
                 contents = i.read()
+            if principal and len(contents) > len(initial):
+                continue
             shrinker.classify(contents)
 
         for filepath in filenames:
