@@ -23,12 +23,15 @@ ALPHABET = [bytes([b]) for b in range(256)]
 
 
 class Shrinker(object):
+
     def __init__(
         self,
         initial, classify, *,
         preprocess=None, shrink_callback=None, printer=None,
-        volume=Volume.quiet, principal_only=False
+        volume=Volume.quiet, principal_only=False,
+        passes=None
     ):
+        self.__interesting_ngrams = set()
         self.__shrink_callback = shrink_callback or (lambda s, r: None)
         self.__printer = printer or (lambda s: None)
         self.__inital = initial
@@ -42,16 +45,24 @@ class Shrinker(object):
         self.shrinks = 0
         preprocessed = self.__preprocess(initial)
         if preprocessed is None:
-            raise ValueError("Initial example is rejected by preprocessing")
+            raise ValueError('Initial example is rejected by preprocessing')
         label = self.classify(preprocessed)
-        self.output("Initial example: %s, labelled %r" % ((
-            "%d bytes " % (len(initial),)
+        self.output('Initial example: %s, labelled %r' % ((
+            '%d bytes ' % (len(initial),)
             if initial == preprocessed
-            else "%d bytes (%d preprocessed)" % (
+            else '%d bytes (%d preprocessed)' % (
                 len(initial), len(preprocessed))),
             label))
         self.__initial_label = label
         self.principal_only = principal_only
+        self.passes = passes
+
+    def pass_enabled(self, pass_name):
+        if self.passes is None or pass_name in self.passes:
+            self.output('Running pass %r' % (pass_name,))
+            return True
+        self.debug('Skipping pass %r' % (pass_name,))
+        return False
 
     def output(self, text):
         if self.__volume >= Volume.normal:
@@ -93,20 +104,20 @@ class Shrinker(object):
                 if self.best:
                     if result not in self.best:
                         self.output((
-                            "Shrink %d: Discovered new label %r"
-                            " with %d bytes") % (
+                            'Shrink %d: Discovered new label %r'
+                            ' with %d bytes') % (
                                 self.shrinks, result, len(string)))
                     else:
                         deletes = len(self.best[result]) - len(string)
                         if deletes == 0:
-                            shrink_message = "lowered %d" % (
+                            shrink_message = 'lowered %d' % (
                                 len([1 for u, v in zip(
                                     string, self.best[result]) if u < v]),)
                         else:
-                            shrink_message = "deleted %d" % (deletes,)
+                            shrink_message = 'deleted %d' % (deletes,)
 
                         self.output(
-                            "Shrink %d: Label %r now %d bytes (%s)" % (
+                            'Shrink %d: Label %r now %d bytes (%s)' % (
                                 self.shrinks, result, len(string),
                                 shrink_message))
                 self.__shrink_callback(string, result)
@@ -116,9 +127,9 @@ class Shrinker(object):
         return result
 
     def __suitable_ngrams(self, label):
-        self.debug("Calculating ngrams for %r" % (label,))
+        self.debug('Calculating ngrams for %r' % (label,))
         found_ngrams = ngrams(self.best[label])
-        self.debug("Found %d ngrams" % len(found_ngrams),)
+        self.debug('Found %d ngrams' % len(found_ngrams),)
         return found_ngrams
 
     def bracket_shrink(self, string, criterion, threshold=1.0):
@@ -131,7 +142,7 @@ class Shrinker(object):
                     continue
                 intervals.sort(
                     key=lambda x: (x[0] - x[1], x[0]))
-                self.debug("Shrinking for bracketed pair %r, %r" % (
+                self.debug('Shrinking for bracketed pair %r, %r' % (
                     bytes([l]), bytes([r])
                 ))
                 changed = True
@@ -143,7 +154,7 @@ class Shrinker(object):
                         for t in [
                             string[:u] + string[v:],
                             string[:u + 1] + string[v - 1:],
-                            string[:u] + string[u+1:v-1]  + string[v:],
+                            string[:u] + string[u + 1:v - 1] + string[v:],
                         ]:
                             if (
                                 len(t) < len(string) * threshold and
@@ -160,9 +171,21 @@ class Shrinker(object):
                             break
         return string
 
+    def delete_characters(self, string, criterion):
+        counts = Counter(string)
+        for c in sorted(range(256), key=counts.__getitem__, reverse=True):
+            if c not in string:
+                continue
+            c = bytes([c])
+            t = string.replace(c, b'')
+            if criterion(t):
+                self.debug('Removed %r' % (c,))
+                string = t
 
-    def compress_runs(self, string, criterion):
-        for c in range(256):
+    def partition_charwise(self, string, criterion):
+        counts = Counter(string)
+        alphabet = sorted(counts)
+        for c in sorted(alphabet, key=lambda s: (counts[s], s)):
             if c not in string:
                 continue
             compressed = bytearray()
@@ -177,11 +200,102 @@ class Shrinker(object):
                     compressed.append(b)
             compressed = bytes(compressed)
             if compressed != string:
-                self.debug("Compressing runs of %r" % (bytes([c]),))
+                self.debug('Compressing runs of %r' % (bytes([c]),))
                 if criterion(compressed):
                     string = compressed
+            c = bytes([c])
+
+            partition = string.split(c)
+            if len(partition) <= 1:
+                continue
+            self.debug('Partition by %r into %d parts' % (c, len(partition)))
+            shrunk = _ddmin(partition, lambda ls: criterion(c.join(ls)))
+            if len(shrunk) < len(partition):
+                self.debug('Removed %d parts' % (
+                    len(partition) - len(shrunk),))
+            t = b''.join(shrunk)
+            if criterion(t):
+                self.debug('Removed %r entirely' % (c,))
+                string = t
+            else:
+                smaller = {bytes([d]) for d in alphabet if d < c[0]}
+                for d in sorted(smaller):
+                    t = d.join(shrunk)
+                    if criterion(t):
+                        self.debug('Replaced %r with %r' % (c, d))
+                        string = t
+                        break
+                else:
+                    string = c.join(shrunk)
+
         return string
 
+    def calculate_partition(self, string, l, r, level):
+        labels = []
+        count = 0
+        bad = False
+        for c in string:
+            if c == l:
+                count += 1
+            elif c == r:
+                count -= 1
+                if count < 0:
+                    bad = True
+                    break
+            labels.append(count >= level)
+        if bad:
+            return None
+        if count != 0:
+            return None
+        if True not in labels:
+            return None
+        assert len(labels) == len(string)
+        prev_label = None
+        current = bytearray()
+        partition = []
+        for c, label in zip(string, labels):
+            if label != prev_label:
+                if current:
+                    partition.append(bytes(current))
+                current.clear()
+                current.append(c)
+                prev_label = label
+            else:
+                current.append(c)
+        if current:
+            partition.append(bytes(current))
+        assert b''.join(partition) == string
+        assert b'' not in partition
+        return partition
+
+    def bracket_partition(self, string, criterion):
+        level = 1
+        while True:
+            initial = string
+            brackets = list(detect_possible_brackets(string))
+            partitions = []
+            for l, r in brackets:
+                partition = self.calculate_partition(string, l, r, level)
+                if partition is not None:
+                    partitions.append((l, r, len(partition)))
+
+            partitions.sort(key=lambda x: x[-1])
+            any_partitions = False
+            for l, r, _ in partitions:
+                partition = self.calculate_partition(string, l, r, level)
+                if partition is None:
+                    continue
+                any_partitions = True
+                self.debug(
+                    'Partitioning by bracket %r at level %d into %d pieces' % (
+                        bytes([l, r]), level, len(partition)))
+                string = b''.join(_ddmin(
+                    partition, lambda ls: criterion(b''.join(ls))
+                ))
+            if not any_partitions:
+                break
+            if string == initial:
+                level += 1
 
     def shrink(self):
         prev = -1
@@ -201,192 +315,102 @@ class Shrinker(object):
                     continue
                 if self.classify(b'') == label:
                     continue
-                self.output("Shrinking for label %r from %d bytes" % (
-                    label, len(current)))
+                self.output(
+                    'Shrinking for label %r from %d bytes (%d distinct)' % (
+                        label, len(current), len(set(current))))
 
-                if len(current) <= 2:
-                    _smallmin(current, lambda b: self.classify(b) == label)
-                    continue
+                if self.pass_enabled('split'):
+                    lo = 0
+                    hi = len(current)
+                    while lo + 1 < hi:
+                        mid = (lo + hi) // 2
+                        if self.classify(current[:mid]) == label:
+                            hi = mid
+                        else:
+                            lo = mid
 
                 initial_shrinks = self.shrinks
 
                 def criterion(string):
                     return self.classify(string) == label
 
-                self.debug("Compressing runs")
-                self.compress_runs(self.best[label], criterion)
-
-                # We do an initial bracket shrink pass with a threshold close
-                # but not exactly 1. This catches a lot of potential for coarse
-                # deletion of blocks but the fact that we enforce an
-                # exponential shrink prevents us from getting distracted by a
-                # bunch of tiny shrinks here.
-                self.bracket_shrink(
-                    self.best[label], criterion, threshold=0.99)
-
-                brackets = list(detect_possible_brackets(self.best[label]))
-                brackets.sort(key=lambda s: self.best[label].count(s[0]))
-                for l, r in brackets:
-                    if intervals_for_brackets(self.best[label], l, r) is None:
-                        continue
-                    partition = bracket_partition(self.best[label], l, r)
-                    self.debug("Partitioning by bracket %r into %d pieces" % (
-                        bytes([l, r]), len(partition)
-                    ))
-                    _ddmin(
-                        partition, lambda ls: criterion(b''.join(ls))
+                if self.pass_enabled('brackets'):
+                    self.debug('Minimizing bracketwise')
+                    self.bracket_partition(self.best[label], criterion)
+                    self.bracket_shrink(
+                        self.best[label], lambda c: self.classify(c) == label
                     )
 
-                if initial_shrinks != self.shrinks:
-                    continue
-
-                lo = 0
-                hi = len(current)
-                while lo + 1 < hi:
-                    mid = (lo + hi) // 2
-                    if self.classify(current[:mid]) == label:
-                        hi = mid
-                    else:
-                        lo = mid
-
-                for ngram in self.__suitable_ngrams(label):
-                    initial = self.best[label].split(ngram)
-                    if len(initial) < len(ngram) + 1:
+                    if initial_shrinks != self.shrinks:
                         continue
-                    assert len(initial) >= 2
-                    self.debug((
-                        "Splitting by %r into %d parts. "
-                        "Smallest size %d") % (
-                            ngram, len(initial), min(map(len, initial))))
-                    result = _ddmin(
-                        initial,
-                        lambda ls: self.classify(ngram.join(ls)) == label
-                    )
-                    if len(result) < len(initial):
-                        self.debug("Split removed %d parts out of %d" % (
-                            len(initial) - len(result), len(initial)))
 
-                    initial = result
-                    self.debug("Attempting to minimize ngram %r" % (
-                        ngram,))
-                    result = _bytemin(
-                        ngram, lambda ls: self.classify(
-                            ls.join(initial)
-                        ) == label
-                    )
-                    if ngram != result:
-                        self.debug("Minimized ngram %r to %r" % (
-                            ngram, result))
+                if self.pass_enabled('charwise'):
+                    self.debug('Minimizing by partition')
+                    self.partition_charwise(self.best[label], criterion)
 
-                self.debug("Minimizing bracketwise")
-                self.bracket_shrink(
-                    self.best[label], lambda c: self.classify(c) == label
-                )
-
-                if initial_shrinks != self.shrinks:
-                    continue
-
-                self.debug("Minimizing by bytes")
-                _bytemin(
-                    self.best[label], lambda b: self.classify(b) == label)
-
-                current = self.best[label]
-                characters = sorted(set(current))
-                self.debug("Minimizing alphabet of %d characters" % (
-                    len(characters),
-                ))
-                for a in characters:
-                    if self.best[label].count(a) <= 1:
+                    if initial_shrinks != self.shrinks:
                         continue
-                    for b in characters:
-                        current = self.best[label]
-                        if a < b:
-                            test = self.shrinks
-                            self.classify(bytes(
-                                a if u == b else u for u in current 
-                            ))
-                            if self.shrinks != test:
-                                self.debug("%r -> %r" % (
-                                    bytes([b]), bytes([a])))
-                new_size = len(set(self.best[label]))
-                if new_size < len(characters):
-                    self.debug("Minimized alphabet to %d characters" % (
-                        new_size,
-                    ))
 
+                if self.pass_enabled('bytewise'):
+                    self.debug('Minimizing by bytes')
+                    _bytemin(
+                        self.best[label], lambda b: self.classify(b) == label)
+
+                    if initial_shrinks != self.shrinks:
+                        continue
+
+                if self.pass_enabled('ngrams'):
+                    for ngram in self.__suitable_ngrams(label):
+                        if len(ngram) <= 1:
+                            continue
+                        initial = self.best[label].split(ngram)
+                        if len(initial) <= 1:
+                            continue
+                        self.debug('Partitioning by ngram %r' % (
+                            ngram,))
+                        shrunk = _ddmin(initial, lambda ls: criterion(
+                            ngram.join(ls)))
+                        if len(shrunk) <= 1:
+                            continue
+                        self.debug('Attempting to minimize ngram %r' % (
+                            ngram,))
+                        result = _bytemin(
+                            ngram, lambda ng: criterion(ng.join(shrunk)))
+                        if ngram != result:
+                            self.debug('Minimized ngram %r to %r' % (
+                                ngram, result))
+
+                    if initial_shrinks != self.shrinks:
+                        continue
 
 
 def ngrams(string):
     assert isinstance(string, bytes)
     grams_to_indices = {b'': range(len(string))}
-    scores = {}
-    counts = {}
-    grams_by_count = {}
+    ngrams = set()
+    ngram_counts = Counter()
     c = 0
     while grams_to_indices:
-        for gram, indices in grams_to_indices.items():
-            counts[gram] = len(indices)
-            if len(indices) > 1:
-                # A decent approximation to the size of string when splitting
-                # by this ngram. It ignores overlap so isn't quite correct, but
-                # is easier and cheaper to calculate.
-                scores[gram] = min(b - a for a, b in zip(indices, indices[1:]))
-                scores[gram] = min(scores[gram], indices[0])
-                scores[gram] = min(scores[gram], len(string) - indices[-1])
-                assert scores[gram] >= 0
-            scores[gram] = 0
         new_grams_to_indices = {}
         for ng, ls in grams_to_indices.items():
             assert len(ng) == c
-            if len(ls) + 1 >= max(2, len(ng)):
+            if len(ls) >= 2:
                 if ng:
-                    grams_by_count.setdefault(len(ls), []).append(ng)
+                    ngrams.add(ng)
+                    ngram_counts[ng] = len(ls)
                 seen = set()
                 for i in ls:
-                    g = string[i:i+len(ng)+1]
+                    g = string[i:i + len(ng) + 1]
                     seen.add(g)
                     if len(g) == c + 1:
                         new_grams_to_indices.setdefault(g, []).append(i)
         c += 1
         grams_to_indices = new_grams_to_indices
-    merge_table = {}
-    def find(u):
-        trail = []
-        while True:
-            n = merge_table.setdefault(u, u)
-            if n != u:
-                assert u not in trail
-                trail.append(u)
-                u = n
-            else:
-                break
-        for t in trail:
-            merge_table[t] = u
-        return u
-
-    def union(u, v):
-        u = find(u)
-        v = find(v)
-        if u == v:
-            return
-        u, v = sorted((u, v), key=lambda x: (len(x), x))
-        merge_table[u] = v
-
-    for vs in grams_by_count.values():
-        for v in vs:
-            find(v)
-        vs.sort(key=len)
-        for i, u in enumerate(vs):
-            if len(u) <= 3:
-                continue
-            for v in vs[i+1:]:
-                if len(v) > len(u) + 1:
-                    break
-                if u[:-1] == v[1:] or v[:-1] == u[:1] or u in v or v in u:
-                    union(u, v)
-    grams = list({find(v) for v in merge_table.values()})
-    grams.sort(key=lambda s: (len(s), scores[s], -counts[s]), reverse=True)
-    return grams
+    for ngram in sorted(ngrams, key=len, reverse=True):
+        for t in [ngram[:-1], ngram[1:]]:
+            if ngram_counts[t] == ngram_counts[ngram]:
+                ngrams.discard(t)
+    return sorted(ngrams, key=len, reverse=True)
 
 
 def score(splitter, string):
@@ -416,60 +440,46 @@ def _smallmin(string, classify):
                     return c
 
 
-def bracket_partition(string, l, r):
-    labels = []
-    count = 0
-    for c in string:
-        if c == l:
-            count += 1
-        elif c == r:
-            count -= 1
-            assert count >= 0
-        labels.append(count > 0)
-    assert len(labels) == len(string)
-    prev_label = None
-    current = bytearray()
-    result = []
-    for c, label in zip(string, labels):
-        if label != prev_label:
-            if current:
-                result.append(bytes(current))
-            current.clear()
-            current.append(c)
-            prev_label = label
-        else:
-            current.append(c)
-    if current:
-        result.append(bytes(current))
-    assert b''.join(result) == string
-    assert b'' not in result
-    return result
-
-
 def _bytemin(string, criterion):
     return bytes(_ddmin(list(string), lambda ls: criterion(bytes(ls))))
 
+SMALL = 2
+
+
 def _ddmin(ls, criterion):
     if not criterion(ls):
-        raise ValueError("Initial example does not satisfy condition")
+        raise ValueError('Initial example does not satisfy condition')
     if criterion([]):
         return []
     k = len(ls) // 2
     while k > 0:
         i = 0
-        while i + k <= len(ls):
-            s = ls[:i] + ls[i + k:]
-            assert len(s) + k == len(ls)
+        while k < len(ls) and i + k <= len(ls):
+            s = ls[i:i + k]
+            assert len(s) < len(ls)
             if criterion(s):
                 ls = s
             else:
-                i += k
-        k //= 2
+                s = ls[:i] + ls[i + k:]
+                assert len(s) + k == len(ls)
+                if criterion(s):
+                    ls = s
+                else:
+                    if k <= SMALL:
+                        i += 1
+                    else:
+                        i += k
+        if k <= SMALL:
+            k -= 1
+        elif k <= 2 * SMALL:
+            k = SMALL
+        else:
+            k //= 2
     return ls
 
 
 def shrink(*args, **kwargs):
-    """Attempt to find a minimal version of initial that satisfies classify"""
+    """Attempt to find a minimal version of initial that satisfies classify."""
     shrinker = Shrinker(*args, **kwargs)
     shrinker.shrink()
     return shrinker.best

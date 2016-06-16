@@ -9,6 +9,7 @@ import signal
 import sys
 import time
 import random
+import traceback
 
 
 def validate_command(ctx, param, value):
@@ -22,7 +23,7 @@ def validate_command(ctx, param, value):
     else:
         what = which(command)
         if what is None:
-            raise click.BadParameter("%s: command not found" % (command,))
+            raise click.BadParameter('%s: command not found' % (command,))
         command = os.path.abspath(what)
     return [command] + parts[1:]
 
@@ -65,35 +66,39 @@ which may discover other interesting files as well as aiding the shrinking
 process.
 """.strip()
 )
-@click.option("--debug", default=False, is_flag=True, help=(
-    "Emit (extremely verbose) debug output while shrinking"
+@click.option('--debug', default=False, is_flag=True, help=(
+    'Emit (extremely verbose) debug output while shrinking'
 ))
-@click.option("--principal", default=False, is_flag=True, help=(
-    "When set will only try to shrink examples that classify the same as the "
-    "initial example (other values will still be recorded but it will not make"
-    " any deliberate attempts to shrink them)."
+@click.option('--principal', default=False, is_flag=True, help=(
+    'When set will only try to shrink examples that classify the same as the '
+    'initial example (other values will still be recorded but it will not make'
+    ' any deliberate attempts to shrink them).'
 ))
 @click.option(
-    "--quiet", default=False, is_flag=True, help=(
-        "Emit no output at all while shrinking"))
+    '--quiet', default=False, is_flag=True, help=(
+        'Emit no output at all while shrinking'))
 @click.option(
-    "--backup", default='', help=(
-        "Name of the backup file to create. Defaults to adding .bak to the "
-        "name of the source file"))
+    '--backup', default='', help=(
+        'Name of the backup file to create. Defaults to adding .bak to the '
+        'name of the source file'))
 @click.option(
-    '--shrinks', default="shrinks",
+    '--shrinks', default='shrinks',
     type=click.Path(file_okay=False, resolve_path=True))
 @click.option('--seed', default=None)
 @click.option(
     '--preprocess', default=None, callback=validate_command,
     help=(
         "Provide a command that 'normalizes' the input before it is tested ("
-        "e.g. a code formatter). If this command returns a non-zero exit code "
-        "then the example will be skipped altogether."))
+        'e.g. a code formatter). If this command returns a non-zero exit code '
+        'then the example will be skipped altogether.'))
 @click.option(
     '--timeout', default=1, type=click.FLOAT, help=(
-        "Time out subprocesses after this many seconds. If set to <= 0 then "
-        "no timeout will be used."))
+        'Time out subprocesses after this many seconds. If set to <= 0 then '
+        'no timeout will be used.'))
+@click.option(
+    '--pass', '-p', 'passes', multiple=True,
+    help='Run only a single pass'
+)
 @click.option('--classify', default=None, callback=validate_command)
 @click.argument('test', callback=validate_command)
 @click.argument('filename', type=click.Path(
@@ -104,18 +109,23 @@ process.
 ), nargs=-1)
 def shrinker(
     debug, quiet, backup, filename, test, shrinks, preprocess, timeout,
-    classify, filenames, seed, principal
+    classify, filenames, seed, principal, passes
 ):
     if debug and quiet:
-        raise click.UsageError("Cannot have both debug output and be quiet")
+        raise click.UsageError('Cannot have both debug output and be quiet')
+
+    if debug:
+        def dump_trace(signum, frame):
+            traceback.print_stack()
+        signal.signal(signal.SIGQUIT, dump_trace)
 
     if seed is not None:
         random.seed(seed)
 
     if not backup:
-        backup = filename + os.extsep + "bak"
+        backup = filename + os.extsep + 'bak'
 
-    history = os.path.join(shrinks, "history")
+    history = os.path.join(shrinks, 'history')
 
     try:
         os.mkdir(shrinks)
@@ -160,7 +170,7 @@ def shrinker(
                 try:
                     sp.communicate(timeout=timeout)
                 except subprocess.TimeoutExpired:
-                    return "timeout"
+                    return 'timeout'
                 finally:
                     interrupt_wait_and_kill(sp)
                 return sp.returncode
@@ -182,7 +192,7 @@ def shrinker(
                 classify_return = e.returncode
             if classify_output and classify_output not in seen_output:
                 shrinker.debug(
-                    "New classification: %r" % (classify_output,)
+                    'New classification: %r' % (classify_output,)
                 )
                 seen_output.add(classify_output)
             return ':%d:%d:%s:' % (
@@ -208,10 +218,10 @@ def shrinker(
                 assert isinstance(out, bytes)
                 return out
             except subprocess.TimeoutExpired:
-                shrinker.debug("Timed out while calling preprocessor")
+                shrinker.debug('Timed out while calling preprocessor')
                 return None
             except subprocess.CalledProcessError:
-                shrinker.debug("Error while calling preprocessor")
+                shrinker.debug('Error while calling preprocessor')
                 return None
             finally:
                 interrupt_wait_and_kill(sp)
@@ -239,16 +249,16 @@ def shrinker(
             *base, ext = os.path.basename(filename).split(os.extsep, 1)
             base = os.extsep.join(base)
         if base:
-            return os.path.extsep.join(((base, "%s" % (status,), ext)))
+            return os.path.extsep.join(((base, '%s' % (status,), ext)))
         else:
-            return os.path.extsep.join(((ext, "%s" % (status,))))
+            return os.path.extsep.join(((ext, '%s' % (status,))))
 
     def shrink_callback(string, status):
         with open(os.path.join(shrinks, suffixed_name(status)), 'wb') as o:
             o.write(string)
         with open(
             os.path.join(history, suffixed_name(
-                "%d-%s" % (len(string),  hashlib.sha1(string).hexdigest()[:12])
+                '%d-%s' % (len(string), hashlib.sha1(string).hexdigest()[:12])
             )), 'wb'
         ) as o:
             o.write(string)
@@ -256,6 +266,7 @@ def shrinker(
         initial, classify_data, volume=volume,
         shrink_callback=shrink_callback, printer=click.echo,
         preprocess=preprocessor, principal_only=principal,
+        passes=passes or None,
     )
     initial_label = shrinker.classify(initial)
     # Go through the old shrunk files. This both reintegrates them into our
@@ -270,11 +281,11 @@ def shrinker(
                 contents = i.read()
             status = shrinker.classify(contents)
             if suffixed_name(status) != f:
-                shrinker.debug("Clearing out defunct %r file" % (f,))
+                shrinker.debug('Clearing out defunct %r file' % (f,))
                 os.unlink(path)
             else:
                 shrinker.debug(
-                    "Reusing previous %d byte example for label %r" % (
+                    'Reusing previous %d byte example for label %r' % (
                         len(contents), status
                     ))
         for f in os.listdir(history):
@@ -296,7 +307,7 @@ def shrinker(
             timeout //= 10
         shrinker.shrink()
     finally:
-        if filename != "-":
+        if filename != '-':
             os.rename(filename, backup)
             with open(filename, 'wb') as o:
                 o.write(shrinker.best[initial_label])
