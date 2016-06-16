@@ -156,7 +156,6 @@ def shrinker(
                 sp.communicate(string, timeout=timeout)
             finally:
                 interrupt_wait_and_kill(sp)
-            result = sp.returncode
         else:
             try:
                 os.rename(filename, backup)
@@ -170,19 +169,17 @@ def shrinker(
                 try:
                     sp.communicate(timeout=timeout)
                 except subprocess.TimeoutExpired:
-                    return 'timeout'
+                    return {'timeout'}
                 finally:
                     interrupt_wait_and_kill(sp)
-                return sp.returncode
             finally:
                 try:
                     os.remove(filename)
                 except FileNotFoundError:
                     pass
                 os.rename(backup, filename)
-        if classify is None or result is None:
-            return result
-        else:
+        labels = {'exit:%d' % (sp.returncode,)}
+        if classify is not None:
             try:
                 classify_output = subprocess.check_output(
                     classify, timeout=timeout, stdin=subprocess.DEVNULL)
@@ -190,16 +187,11 @@ def shrinker(
             except subprocess.CalledProcessError as e:
                 classify_output = e.output
                 classify_return = e.returncode
-            if classify_output and classify_output not in seen_output:
-                shrinker.debug(
-                    'New classification: %r' % (classify_output,)
-                )
-                seen_output.add(classify_output)
-            return ':%d:%d:%s:' % (
-                result, classify_return,
-                hashlib.sha1(classify_output).hexdigest()[:8]
-                if classify_output else '.'
-            )
+            labels.add('classify-exit:%d' % (classify_return,))
+            if classify_output:
+                for l in classify_output.splitlines():
+                    labels.add('classify:%s' % (l.strip().decode('utf-8'),))
+        return labels
 
     timeout *= 10
     if timeout <= 0:
@@ -254,21 +246,24 @@ def shrinker(
             return os.path.extsep.join(((ext, '%s' % (status,))))
 
     def shrink_callback(string, status):
-        with open(os.path.join(shrinks, suffixed_name(status)), 'wb') as o:
-            o.write(string)
-        with open(
-            os.path.join(history, suffixed_name(
-                '%d-%s' % (len(string), hashlib.sha1(string).hexdigest()[:12])
-            )), 'wb'
-        ) as o:
-            o.write(string)
+        history_file = os.path.join(history, suffixed_name(
+            '%d-%s' % (len(string), hashlib.sha1(string).hexdigest()[:12])
+        ))
+        if not os.path.exists(history_file):
+            with open(history_file, 'wb') as o:
+                o.write(string)
+        for s in status:
+            if s.startswith('exit:'):
+                with open(os.path.join(shrinks, suffixed_name(s)), 'wb') as o:
+                    o.write(string)
     shrinker = Shrinker(
         initial, classify_data, volume=volume,
         shrink_callback=shrink_callback, printer=click.echo,
         preprocess=preprocessor, principal_only=principal,
         passes=passes or None,
     )
-    initial_label = shrinker.classify(initial)
+    initial_labels = shrinker.classify(initial)
+    initial_label = [f for f in initial_labels if f.startswith('exit:')][0]
     # Go through the old shrunk files. This both reintegrates them into our
     # current shrink state so we can resume and also lets us clear out old bad
     # examples.
@@ -279,15 +274,7 @@ def shrinker(
                 continue
             with open(path, 'rb') as i:
                 contents = i.read()
-            status = shrinker.classify(contents)
-            if suffixed_name(status) != f:
-                shrinker.debug('Clearing out defunct %r file' % (f,))
-                os.unlink(path)
-            else:
-                shrinker.debug(
-                    'Reusing previous %d byte example for label %r' % (
-                        len(contents), status
-                    ))
+            shrinker.classify(contents)
         for f in os.listdir(history):
             path = os.path.join(history, f)
             if not os.path.isfile(path):
@@ -305,7 +292,10 @@ def shrinker(
 
         if timeout is not None:
             timeout //= 10
-        shrinker.shrink()
+        if principal:
+            shrinker.shrink(initial_label)
+        else:
+            shrinker.shrink()
     finally:
         if filename != '-':
             os.rename(filename, backup)

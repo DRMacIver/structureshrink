@@ -47,15 +47,16 @@ class Shrinker(object):
         if preprocessed is None:
             raise ValueError('Initial example is rejected by preprocessing')
         label = self.classify(preprocessed)
-        self.output('Initial example: %s, labelled %r' % ((
+        self.output('Initial example: %s, with %d labels' % ((
             '%d bytes ' % (len(initial),)
             if initial == preprocessed
             else '%d bytes (%d preprocessed)' % (
                 len(initial), len(preprocessed))),
-            label))
-        self.__initial_label = label
+            len(label)))
+        self.__initial_labels = label
         self.principal_only = principal_only
         self.passes = passes
+        self.__fully_shrunk = set()
 
     def pass_enabled(self, pass_name):
         if self.passes is None or pass_name in self.passes:
@@ -96,32 +97,57 @@ class Shrinker(object):
                 result = self.__cache[preprocess_key]
             except KeyError:
                 result = self.__classify(preprocessed)
-            if (
-                result not in self.best or
-                sort_key(string) < sort_key(self.best[result])
-            ):
-                self.shrinks += 1
-                if self.best:
-                    if result not in self.best:
-                        self.output((
-                            'Shrink %d: Discovered new label %r'
-                            ' with %d bytes') % (
-                                self.shrinks, result, len(string)))
-                    else:
-                        deletes = len(self.best[result]) - len(string)
-                        if deletes == 0:
-                            shrink_message = 'lowered %d' % (
-                                len([1 for u, v in zip(
-                                    string, self.best[result]) if u < v]),)
-                        else:
-                            shrink_message = 'deleted %d' % (deletes,)
 
-                        self.output(
-                            'Shrink %d: Label %r now %d bytes (%s)' % (
-                                self.shrinks, result, len(string),
-                                shrink_message))
-                self.__shrink_callback(string, result)
-                self.__best[result] = string
+            new_labels = set()
+            modified_labels = set()
+
+            for label in result:
+                if (
+                    label not in self.best or
+                    sort_key(string) < sort_key(self.best[label])
+                ):
+                    if label not in self.best:
+                        new_labels.add(label)
+                    else:
+                        modified_labels.add(label)
+                    self.__best[label] = string
+
+            if new_labels or modified_labels:
+                self.__shrink_callback(string, new_labels | modified_labels)
+                self.shrinks += 1
+
+            if new_labels:
+                if len(new_labels) == 1:
+                    self.output((
+                        'Shrink %d: Discovered new label %r'
+                        ' with %d bytes') % (
+                            self.shrinks, list(new_labels)[0], len(string)))
+                else:
+                    self.output((
+                        'Shrink %d: Discovered %d new labels'
+                        ' with %d bytes') % (
+                            self.shrinks, len(new_labels), len(string)))
+            if modified_labels:
+                if len(modified_labels) == 1:
+                    label = list(modified_labels)[0]
+                    deletes = len(self.best[label]) - len(string)
+                    if deletes == 0:
+                        shrink_message = 'lowered %d' % (
+                            len([1 for u, v in zip(
+                                string, self.best[label]) if u < v]),)
+                    else:
+                        shrink_message = 'deleted %d' % (deletes,)
+
+                    self.output(
+                        'Shrink %d: Label %r now %d bytes (%s)' % (
+                            self.shrinks, label, len(string),
+                            shrink_message))
+                else:
+                    self.output((
+                        'Shrink %d: Improved %d existing labels'
+                        ' to %d bytes') % (
+                            self.shrinks, len(modified_labels), len(string)))
+
         for k in keys:
             self.__cache[k] = result
         return result
@@ -297,23 +323,32 @@ class Shrinker(object):
             if string == initial:
                 level += 1
 
-    def shrink(self):
+    def shrink(self, label=None):
         prev = -1
         while prev != self.shrinks:
             assert self.shrinks > prev
             prev = self.shrinks
-            options = list(self.best.items())
             # Always prefer the label we started with, because that's the one
             # the user is most likely to be interested in. Amongst the rest,
             # go for the one that is currently most complicated.
-            options.sort(key=lambda lr: sort_key(lr[1]), reverse=True)
-            options.sort(key=lambda lr: lr[0] != self.__initial_label)
+            if label is not None:
+                options = [(label, self.best[label])]
+            else:
+                options = list(self.best.items())
+                options.sort(key=lambda lr: sort_key(lr[1]), reverse=True)
+                options.sort(key=lambda lr: lr[0] not in self.__initial_labels)
             for label, current in options:
+
                 if not current:
                     continue
-                if self.principal_only and self.__initial_label != label:
+                key = cache_key(current)
+                if key in self.__fully_shrunk:
                     continue
-                if self.classify(b'') == label:
+
+                def criterion(string):
+                    return label in self.classify(string)
+
+                if criterion(b''):
                     continue
                 self.output(
                     'Shrinking for label %r from %d bytes (%d distinct)' % (
@@ -324,22 +359,17 @@ class Shrinker(object):
                     hi = len(current)
                     while lo + 1 < hi:
                         mid = (lo + hi) // 2
-                        if self.classify(current[:mid]) == label:
+                        if criterion(current[:mid]):
                             hi = mid
                         else:
                             lo = mid
 
                 initial_shrinks = self.shrinks
 
-                def criterion(string):
-                    return self.classify(string) == label
-
                 if self.pass_enabled('brackets'):
                     self.debug('Minimizing bracketwise')
                     self.bracket_partition(self.best[label], criterion)
-                    self.bracket_shrink(
-                        self.best[label], lambda c: self.classify(c) == label
-                    )
+                    self.bracket_shrink(self.best[label], criterion)
 
                     if initial_shrinks != self.shrinks:
                         continue
@@ -353,8 +383,7 @@ class Shrinker(object):
 
                 if self.pass_enabled('bytewise'):
                     self.debug('Minimizing by bytes')
-                    _bytemin(
-                        self.best[label], lambda b: self.classify(b) == label)
+                    _bytemin(self.best[label], criterion)
 
                     if initial_shrinks != self.shrinks:
                         continue
@@ -380,8 +409,7 @@ class Shrinker(object):
                             self.debug('Minimized ngram %r to %r' % (
                                 ngram, result))
 
-                    if initial_shrinks != self.shrinks:
-                        continue
+                self.__fully_shrunk.add(key)
 
 
 def ngrams(string):
