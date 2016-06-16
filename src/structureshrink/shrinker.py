@@ -1,6 +1,7 @@
 import hashlib
 from collections import OrderedDict, Counter
 from enum import IntEnum
+from structureshrink.stringtable import StringTable
 
 
 class Volume(IntEnum):
@@ -9,14 +10,13 @@ class Volume(IntEnum):
     debug = 2
 
 
+def cache_key(s):
+    if len(s) < 8:
+        return s
+    return hashlib.sha1(s).digest()[:8]
+
 def sort_key(s):
     return (len(s), s)
-
-
-def cache_key(s):
-    if len(s) < 20:
-        return s
-    return hashlib.sha1(s).digest()
 
 
 ALPHABET = [bytes([b]) for b in range(256)]
@@ -29,7 +29,7 @@ class Shrinker(object):
         initial, classify, *,
         preprocess=None, shrink_callback=None, printer=None,
         volume=Volume.quiet, principal_only=False,
-        passes=None
+        passes=None, table_path=":memory:"
     ):
         self.__interesting_ngrams = set()
         self.__shrink_callback = shrink_callback or (lambda s, r: None)
@@ -38,6 +38,7 @@ class Shrinker(object):
         self.__classify = classify
         self.__preprocess = preprocess or (lambda s: s)
         self.__volume = volume
+        self.__table = StringTable(table_path)
 
         self.__cache = {}
         self.__preprocess_cache = {}
@@ -73,9 +74,8 @@ class Shrinker(object):
         if self.__volume >= Volume.debug:
             self.__printer(text)
 
-    @property
-    def best(self):
-        return self.__best
+    def best(self, label):
+        return self.__table.id_to_string(self.__best[label])
 
     def classify(self, string):
         key = cache_key(string)
@@ -103,17 +103,15 @@ class Shrinker(object):
 
             for label in result:
                 if (
-                    label not in self.best or
-                    sort_key(string) < sort_key(self.best[label])
+                    label not in self.__best or
+                    sort_key(string) < sort_key(self.best(label))
                 ):
-                    if label not in self.best:
+                    if label not in self.__best:
                         new_labels.add(label)
                     else:
                         modified_labels.add(label)
-                    self.__best[label] = string
 
             if new_labels or modified_labels:
-                self.__shrink_callback(string, new_labels | modified_labels)
                 self.shrinks += 1
 
             if new_labels:
@@ -130,11 +128,11 @@ class Shrinker(object):
             if modified_labels:
                 if len(modified_labels) == 1:
                     label = list(modified_labels)[0]
-                    deletes = len(self.best[label]) - len(string)
+                    deletes = len(self.best(label)) - len(string)
                     if deletes == 0:
                         shrink_message = 'lowered %d' % (
                             len([1 for u, v in zip(
-                                string, self.best[label]) if u < v]),)
+                                string, self.best(label)) if u < v]),)
                     else:
                         shrink_message = 'deleted %d' % (deletes,)
 
@@ -148,13 +146,19 @@ class Shrinker(object):
                         ' to %d bytes') % (
                             self.shrinks, len(modified_labels), len(string)))
 
+            if new_labels or modified_labels:
+                string_id = self.__table.string_to_id(string)
+                for label in new_labels | modified_labels:
+                    self.__best[label] = string_id
+                self.__shrink_callback(string, new_labels | modified_labels)
+
         for k in keys:
             self.__cache[k] = result
         return result
 
     def __suitable_ngrams(self, label):
         self.debug('Calculating ngrams for %r' % (label,))
-        found_ngrams = ngrams(self.best[label])
+        found_ngrams = ngrams(self.best(label))
         self.debug('Found %d ngrams' % len(found_ngrams),)
         return found_ngrams
 
@@ -332,16 +336,14 @@ class Shrinker(object):
             # the user is most likely to be interested in. Amongst the rest,
             # go for the one that is currently most complicated.
             if label is not None:
-                options = [(label, self.best[label])]
+                options = [(label, self.__best[label])]
             else:
                 options = list(self.best.items())
-                options.sort(key=lambda lr: sort_key(lr[1]), reverse=True)
-                options.sort(key=lambda lr: lr[0] not in self.__initial_labels)
-            for label, current in options:
-
+            for label, current_id in options:
+                current = self.__table.id_to_string(current_id)
                 if not current:
                     continue
-                key = cache_key(current)
+                key = self.__table.string_to_id(current)
                 if key in self.__fully_shrunk:
                     continue
 
@@ -368,22 +370,22 @@ class Shrinker(object):
 
                 if self.pass_enabled('brackets'):
                     self.debug('Minimizing bracketwise')
-                    self.bracket_partition(self.best[label], criterion)
-                    self.bracket_shrink(self.best[label], criterion)
+                    self.bracket_partition(self.best(label), criterion)
+                    self.bracket_shrink(self.best(label), criterion)
 
                     if initial_shrinks != self.shrinks:
                         continue
 
                 if self.pass_enabled('charwise'):
                     self.debug('Minimizing by partition')
-                    self.partition_charwise(self.best[label], criterion)
+                    self.partition_charwise(self.best(label), criterion)
 
                     if initial_shrinks != self.shrinks:
                         continue
 
                 if self.pass_enabled('bytewise'):
                     self.debug('Minimizing by bytes')
-                    _bytemin(self.best[label], criterion)
+                    _bytemin(self.best(label), criterion)
 
                     if initial_shrinks != self.shrinks:
                         continue
@@ -392,7 +394,7 @@ class Shrinker(object):
                     for ngram in self.__suitable_ngrams(label):
                         if len(ngram) <= 1:
                             continue
-                        initial = self.best[label].split(ngram)
+                        initial = self.best(label).split(ngram)
                         if len(initial) <= 1:
                             continue
                         self.debug('Partitioning by ngram %r' % (

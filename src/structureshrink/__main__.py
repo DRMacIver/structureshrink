@@ -261,6 +261,7 @@ def shrinker(
         shrink_callback=shrink_callback, printer=click.echo,
         preprocess=preprocessor, principal_only=principal,
         passes=passes or None,
+        table_path=os.path.join(shrinks, "strings.db")
     )
     initial_labels = shrinker.classify(initial)
     initial_label = [f for f in initial_labels if f.startswith('exit:')][0]
@@ -300,9 +301,9 @@ def shrinker(
         if filename != '-':
             os.rename(filename, backup)
             with open(filename, 'wb') as o:
-                o.write(shrinker.best[initial_label])
+                o.write(shrinker.best(initial_label))
         else:
-            sys.stdout.buffer.write(shrinker.best[initial_label])
+            sys.stdout.buffer.write(shrinker.best(initial_label))
 
 
 if __name__ == '__main__':
