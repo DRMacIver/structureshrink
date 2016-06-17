@@ -261,7 +261,7 @@ def shrinker(
         shrink_callback=shrink_callback, printer=click.echo,
         preprocess=preprocessor,
         passes=passes or None,
-        table_path=os.path.join(shrinks, "strings.db")
+        table_path=os.path.join(shrinks, 'strings.db')
     )
     initial_labels = shrinker.classify(initial)
     initial_label = [f for f in initial_labels if f.startswith('exit:')][0]
@@ -276,8 +276,10 @@ def shrinker(
             with open(path, 'rb') as i:
                 contents = i.read()
             shrinker.classify(contents)
-        for f in os.listdir(history):
-            path = os.path.join(history, f)
+        for path in sorted(
+            [os.path.join(history, f) for f in os.listdir(history)],
+            key=lambda x: os.stat(x).st_size
+        ):
             if not os.path.isfile(path):
                 continue
             with open(path, 'rb') as i:
@@ -304,6 +306,7 @@ def shrinker(
                 o.write(shrinker.best(initial_label))
         else:
             sys.stdout.buffer.write(shrinker.best(initial_label))
+        del shrinker
 
 
 if __name__ == '__main__':
