@@ -28,7 +28,7 @@ class Shrinker(object):
         self,
         initial, classify, *,
         preprocess=None, shrink_callback=None, printer=None,
-        volume=Volume.quiet, principal_only=False,
+        volume=Volume.quiet,
         passes=None, table_path=":memory:"
     ):
         self.__interesting_ngrams = set()
@@ -55,7 +55,6 @@ class Shrinker(object):
                 len(initial), len(preprocessed))),
             len(label)))
         self.__initial_labels = label
-        self.principal_only = principal_only
         self.passes = passes
         self.__fully_shrunk = set()
 

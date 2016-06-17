@@ -259,7 +259,7 @@ def shrinker(
     shrinker = Shrinker(
         initial, classify_data, volume=volume,
         shrink_callback=shrink_callback, printer=click.echo,
-        preprocess=preprocessor, principal_only=principal,
+        preprocess=preprocessor,
         passes=passes or None,
         table_path=os.path.join(shrinks, "strings.db")
     )
