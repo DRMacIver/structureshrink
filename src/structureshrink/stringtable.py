@@ -6,6 +6,7 @@ from functools import lru_cache
 
 
 class StringTable(object):
+
     def __init__(self, path):
         self.__database = sqlite3.connect(path)
         with self.__cursor() as c:
@@ -23,21 +24,20 @@ class StringTable(object):
             c.execute("""select data from string_mapping where id=?""", (id,))
             for (data,) in c:
                 return zlib.decompress(data)
-            raise KeyError("No string with ID %r" %(id,))
-        
+            raise KeyError('No string with ID %r' % (id,))
 
     @lru_cache()
     def string_to_id(self, string):
         with self.__cursor() as c:
             hash = hashlib.sha1(string).hexdigest()
-            c.execute("select id from string_mapping where hash=?", (
+            c.execute('select id from string_mapping where hash=?', (
                 hash,))
             for (id,) in c:
                 return id
-            c.execute("insert into string_mapping (hash, data) values(?, ?)", (
+            c.execute('insert into string_mapping (hash, data) values(?, ?)', (
                 hash, zlib.compress(string)))
             return c.lastrowid
-    
+
     @contextmanager
     def __cursor(self):
         conn = self.__database
@@ -52,4 +52,3 @@ class StringTable(object):
             raise
         else:
             conn.commit()
-
