@@ -15,6 +15,7 @@ def cache_key(s):
         return s
     return hashlib.sha1(s).digest()[:8]
 
+
 def sort_key(s):
     return (len(s), s)
 
@@ -29,7 +30,7 @@ class Shrinker(object):
         initial, classify, *,
         preprocess=None, shrink_callback=None, printer=None,
         volume=Volume.quiet,
-        passes=None, table_path=":memory:"
+        passes=None, table_path=':memory:'
     ):
         self.__interesting_ngrams = set()
         self.__shrink_callback = shrink_callback or (lambda s, r: None)
@@ -40,7 +41,7 @@ class Shrinker(object):
         self.__volume = volume
         self.__table = StringTable(table_path)
 
-        self.__cache = {}
+        self.__seen = set()
         self.__preprocess_cache = {}
         self.__best = OrderedDict()
         self.shrinks = 0
@@ -78,12 +79,7 @@ class Shrinker(object):
 
     def classify(self, string):
         key = cache_key(string)
-        try:
-            return self.__cache[key]
-        except KeyError:
-            pass
-
-        keys = [key]
+        self.__seen.add(key)
 
         preprocessed = self.__preprocess(string)
         if preprocessed is None:
@@ -91,11 +87,7 @@ class Shrinker(object):
         else:
             string = preprocessed
             preprocess_key = cache_key(preprocessed)
-            keys.append(preprocess_key)
-            try:
-                result = self.__cache[preprocess_key]
-            except KeyError:
-                result = self.__classify(preprocessed)
+            result = self.__classify(preprocessed)
 
             new_labels = set()
             modified_labels = set()
@@ -150,9 +142,6 @@ class Shrinker(object):
                 for label in new_labels | modified_labels:
                     self.__best[label] = string_id
                 self.__shrink_callback(string, new_labels | modified_labels)
-
-        for k in keys:
-            self.__cache[k] = result
         return result
 
     def __suitable_ngrams(self, label):
@@ -320,6 +309,7 @@ class Shrinker(object):
                         bytes([l, r]), level, len(partition)))
                 string = b''.join(_ddmin(
                     partition, lambda ls: criterion(b''.join(ls))
+
                 ))
             if not any_partitions:
                 break
@@ -335,18 +325,25 @@ class Shrinker(object):
             # the user is most likely to be interested in. Amongst the rest,
             # go for the one that is currently most complicated.
             if label is not None:
-                options = [(label, self.__best[label])]
+                options = [label]
             else:
-                options = list(self.best.items())
-            for label, current_id in options:
-                current = self.__table.id_to_string(current_id)
+                options = sorted(
+                    self.__best, key=lambda l: sort_key(self.best(l))
+                )
+            for label in options:
+                current = self.best(label)
                 if not current:
                     continue
                 key = self.__table.string_to_id(current)
                 if key in self.__fully_shrunk:
                     continue
+                max_length = max(len(self.best(l)) for l in self.__best)
 
                 def criterion(string):
+                    if string == self.best(label):
+                        return True
+                    if cache_key(string) in self.__seen:
+                        return False
                     return label in self.classify(string)
 
                 if criterion(b''):
@@ -410,7 +407,8 @@ class Shrinker(object):
                             self.debug('Minimized ngram %r to %r' % (
                                 ngram, result))
 
-                self.__fully_shrunk.add(key)
+                if initial_shrinks == self.shrinks:
+                    self.__fully_shrunk.add(key)
 
 
 def ngrams(string):
