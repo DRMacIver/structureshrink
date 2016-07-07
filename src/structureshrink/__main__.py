@@ -10,6 +10,8 @@ import sys
 import time
 import random
 import traceback
+import shutil
+import tracemalloc
 
 
 def validate_command(ctx, param, value):
@@ -137,6 +139,12 @@ def shrinker(
     except OSError:
         pass
 
+    examples = os.path.join(shrinks, 'examples')
+    try:
+        shutil.rmtree(examples)
+    except FileNotFoundError:
+        pass
+    os.mkdir(examples)
     try:
         os.remove(backup)
     except FileNotFoundError:
@@ -253,9 +261,12 @@ def shrinker(
             with open(history_file, 'wb') as o:
                 o.write(string)
         for s in status:
-            if s.startswith('exit:'):
-                with open(os.path.join(shrinks, suffixed_name(s)), 'wb') as o:
-                    o.write(string)
+            path = os.path.join(examples, suffixed_name(s))
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+            os.link(history_file, path)
     shrinker = Shrinker(
         initial, classify_data, volume=volume,
         shrink_callback=shrink_callback, printer=click.echo,
@@ -276,6 +287,9 @@ def shrinker(
             with open(path, 'rb') as i:
                 contents = i.read()
             shrinker.classify(contents)
+            del contents
+        count = 0
+        total = len(os.listdir(history))
         for path in sorted(
             [os.path.join(history, f) for f in os.listdir(history)],
             key=lambda x: os.stat(x).st_size
@@ -286,7 +300,12 @@ def shrinker(
                 contents = i.read()
             if principal and len(contents) > len(initial):
                 continue
+            count += 1
+            shrinker.debug("Loading file #%d / %d from history" % (
+                count, total))
             shrinker.classify(contents)
+            shrinker.debug("Loaded file #%d" % (
+                count,))
 
         for filepath in filenames:
             with open(filepath, 'rb') as i:
@@ -310,4 +329,11 @@ def shrinker(
 
 
 if __name__ == '__main__':
-    shrinker()
+    try:
+        tracemalloc.start()
+        shrinker()
+    finally:
+        snapshot = tracemalloc.take_snapshot()
+        for stat in snapshot.statistics('lineno')[:10]:
+            print(stat)
+        

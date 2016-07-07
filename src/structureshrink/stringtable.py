@@ -1,7 +1,6 @@
 import sqlite3
 from contextlib import contextmanager
 import hashlib
-import zlib
 from functools import lru_cache
 
 
@@ -23,7 +22,7 @@ class StringTable(object):
         with self.__cursor() as c:
             c.execute("""select data from string_mapping where id=?""", (id,))
             for (data,) in c:
-                return zlib.decompress(data)
+                return data
             raise KeyError('No string with ID %r' % (id,))
 
     @lru_cache()
@@ -35,7 +34,7 @@ class StringTable(object):
             for (id,) in c:
                 return id
             c.execute('insert into string_mapping (hash, data) values(?, ?)', (
-                hash, zlib.compress(string)))
+                hash, string))
             return c.lastrowid
 
     @contextmanager
