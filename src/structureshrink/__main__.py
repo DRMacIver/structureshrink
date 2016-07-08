@@ -11,7 +11,6 @@ import time
 import random
 import traceback
 import shutil
-import tracemalloc
 
 
 def validate_command(ctx, param, value):
@@ -329,11 +328,4 @@ def shrinker(
 
 
 if __name__ == '__main__':
-    try:
-        tracemalloc.start()
-        shrinker()
-    finally:
-        snapshot = tracemalloc.take_snapshot()
-        for stat in snapshot.statistics('lineno')[:10]:
-            print(stat)
-        
+    shrinker()
