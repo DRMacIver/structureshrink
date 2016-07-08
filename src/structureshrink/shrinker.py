@@ -45,6 +45,7 @@ class Shrinker(object):
         self.__preprocess_cache = {}
         self.__best = OrderedDict()
         self.shrinks = 0
+        self.__fully_shrunk = set()
         preprocessed = self.__preprocess(initial)
         if preprocessed is None:
             raise ValueError('Initial example is rejected by preprocessing')
@@ -57,7 +58,6 @@ class Shrinker(object):
             len(label)))
         self.__initial_labels = label
         self.passes = passes
-        self.__fully_shrunk = set()
 
     def pass_enabled(self, pass_name):
         if self.passes is None or pass_name in self.passes:
@@ -116,6 +116,8 @@ class Shrinker(object):
                         'Shrink %d: Discovered %d new labels'
                         ' with %d bytes') % (
                             self.shrinks, len(new_labels), len(string)))
+            self.__fully_shrunk -= new_labels
+            self.__fully_shrunk -= modified_labels
             if modified_labels:
                 if len(modified_labels) == 1:
                     label = list(modified_labels)[0]
@@ -321,9 +323,6 @@ class Shrinker(object):
         while prev != self.shrinks:
             assert self.shrinks > prev
             prev = self.shrinks
-            # Always prefer the label we started with, because that's the one
-            # the user is most likely to be interested in. Amongst the rest,
-            # go for the one that is currently most complicated.
             if label is not None:
                 options = [label]
             else:
@@ -334,9 +333,14 @@ class Shrinker(object):
                 current = self.best(label)
                 if not current:
                     continue
-                key = self.__table.string_to_id(current)
-                if key in self.__fully_shrunk:
+                if label in self.__fully_shrunk:
                     continue
+
+                initial_length = len(current)
+
+                def should_stop():
+                    return len(self.best(label)) * 2 <= initial_length
+
                 max_length = max(len(self.best(l)) for l in self.__best)
 
                 def criterion(string):
@@ -362,6 +366,9 @@ class Shrinker(object):
                         else:
                             lo = mid
 
+                if should_stop():
+                    break
+
                 initial_shrinks = self.shrinks
 
                 if self.pass_enabled('brackets'):
@@ -369,22 +376,23 @@ class Shrinker(object):
                     self.bracket_partition(self.best(label), criterion)
                     self.bracket_shrink(self.best(label), criterion)
 
-                    if initial_shrinks != self.shrinks:
-                        continue
+                    if should_stop():
+                        break
 
                 if self.pass_enabled('charwise'):
                     self.debug('Minimizing by partition')
                     self.partition_charwise(self.best(label), criterion)
 
-                    if initial_shrinks != self.shrinks:
-                        continue
+
+                    if should_stop():
+                        break
 
                 if self.pass_enabled('bytewise'):
                     self.debug('Minimizing by bytes')
                     _bytemin(self.best(label), criterion)
 
-                    if initial_shrinks != self.shrinks:
-                        continue
+                    if should_stop():
+                        break
 
                 if self.pass_enabled('ngrams'):
                     for ngram in self.__suitable_ngrams(label):
@@ -408,7 +416,9 @@ class Shrinker(object):
                                 ngram, result))
 
                 if initial_shrinks == self.shrinks:
-                    self.__fully_shrunk.add(key)
+                    self.__fully_shrunk.add(label)
+                else:
+                    break
 
 
 def ngrams(string):
