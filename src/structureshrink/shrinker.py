@@ -354,7 +354,7 @@ class Shrinker(object):
                     if label in self.classify(string):
                         self.debug(
                             "Label %r now at %d bytes, starting from %d" % (
-                                label, string, initial_length))
+                                label, len(string), initial_length))
                         return True
                     return False
                         
