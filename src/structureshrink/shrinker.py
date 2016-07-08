@@ -342,7 +342,7 @@ class Shrinker(object):
                 initial_shrinks = self.shrinks
 
                 def should_stop():
-                    return len(self.best(label)) * 2 <= initial_length
+                    return self.shrinks != initial_shrinks
 
                 max_length = max(len(self.best(l)) for l in self.__best)
 
