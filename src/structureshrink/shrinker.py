@@ -332,19 +332,16 @@ class Shrinker(object):
                     self.__best, key=lambda l: sort_key(self.best(l))
                 )
             for label in options:
-                current = self.best(label)
-                if not current:
-                    continue
                 if label in self.__fully_shrunk:
                     continue
 
+                current = self.best(label)
+                if not current:
+                    continue
                 initial_length = len(current)
                 initial_shrinks = self.shrinks
 
                 def should_stop():
-                    self.debug(
-                        "Label %r now at %d bytes, starting from %d" % (
-                            label, len(self.best(label)), initial_length))
                     return len(self.best(label)) * 2 <= initial_length
 
                 max_length = max(len(self.best(l)) for l in self.__best)
@@ -354,7 +351,13 @@ class Shrinker(object):
                         return True
                     if cache_key(string) in self.__seen:
                         return False
-                    return label in self.classify(string)
+                    if label in self.classify(string):
+                        self.debug(
+                            "Label %r now at %d bytes, starting from %d" % (
+                                label, string, initial_length))
+                        return True
+                    return False
+                        
 
                 if criterion(b''):
                     continue
