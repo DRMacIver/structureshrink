@@ -319,6 +319,8 @@ class Shrinker(object):
                 level += 1
 
     def shrink(self, label=None):
+        self.classify(b'')
+
         prev = -1
         while prev != self.shrinks:
             assert self.shrinks > prev
@@ -337,8 +339,12 @@ class Shrinker(object):
                     continue
 
                 initial_length = len(current)
+                initial_shrinks = self.shrinks
 
                 def should_stop():
+                    self.debug(
+                        "Label %r now at %d bytes, starting from %d" % (
+                            label, len(self.best(label)), initial_length))
                     return len(self.best(label)) * 2 <= initial_length
 
                 max_length = max(len(self.best(l)) for l in self.__best)
@@ -369,7 +375,6 @@ class Shrinker(object):
                 if should_stop():
                     break
 
-                initial_shrinks = self.shrinks
 
                 if self.pass_enabled('brackets'):
                     self.debug('Minimizing bracketwise')
