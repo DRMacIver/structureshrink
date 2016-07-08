@@ -321,11 +321,13 @@ class Shrinker(object):
     def shrink(self, label=None):
         self.classify(b'')
 
+        target_label = label
+
         prev = -1
         while prev != self.shrinks:
             assert self.shrinks > prev
             prev = self.shrinks
-            if label is not None:
+            if target_label is not None:
                 options = [label]
             else:
                 options = sorted(
@@ -333,8 +335,8 @@ class Shrinker(object):
                 )
             for label in options:
                 if label in self.__fully_shrunk:
+                    self.debug("Skipping shrunk label %r" % (label,))
                     continue
-
                 current = self.best(label)
                 if not current:
                     continue
@@ -378,7 +380,6 @@ class Shrinker(object):
                 if should_stop():
                     break
 
-
                 if self.pass_enabled('brackets'):
                     self.debug('Minimizing bracketwise')
                     self.bracket_partition(self.best(label), criterion)
@@ -390,7 +391,6 @@ class Shrinker(object):
                 if self.pass_enabled('charwise'):
                     self.debug('Minimizing by partition')
                     self.partition_charwise(self.best(label), criterion)
-
 
                     if should_stop():
                         break
@@ -426,6 +426,7 @@ class Shrinker(object):
                 if initial_shrinks == self.shrinks:
                     self.__fully_shrunk.add(label)
                 else:
+                    assert prev != self.shrinks
                     break
 
 
