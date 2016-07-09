@@ -116,8 +116,6 @@ class Shrinker(object):
                         'Shrink %d: Discovered %d new labels'
                         ' with %d bytes') % (
                             self.shrinks, len(new_labels), len(string)))
-            self.__fully_shrunk -= new_labels
-            self.__fully_shrunk -= modified_labels
             if modified_labels:
                 if len(modified_labels) == 1:
                     label = list(modified_labels)[0]
@@ -334,10 +332,10 @@ class Shrinker(object):
                     self.__best, key=lambda l: sort_key(self.best(l))
                 )
             for label in options:
-                if label in self.__fully_shrunk:
-                    self.debug("Skipping shrunk label %r" % (label,))
-                    continue
                 current = self.best(label)
+                key = cache_key(current)
+                if key in self.__fully_shrunk:
+                    continue
                 if not current:
                     continue
                 initial_length = len(current)
@@ -424,7 +422,7 @@ class Shrinker(object):
                                 ngram, result))
 
                 if initial_shrinks == self.shrinks:
-                    self.__fully_shrunk.add(label)
+                    self.__fully_shrunk.add(key)
                 else:
                     assert prev != self.shrinks
                     break
