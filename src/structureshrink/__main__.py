@@ -285,8 +285,8 @@ def shrinker(
     # current shrink state so we can resume and also lets us clear out old bad
     # examples.
     try:
-        for f in os.listdir(shrinks):
-            path = os.path.join(shrinks, f)
+        for f in os.listdir(examples):
+            path = os.path.join(examples, f)
             if not os.path.isfile(path):
                 continue
             with open(path, 'rb') as i:
