@@ -19,6 +19,11 @@ class StringTable(object):
         with open(target, 'rb') as i:
             return i.read()
 
+    def id_to_size(self, id):
+        if self.__path is None:
+            return len(id)
+        return os.stat(os.path.join(self.__path, id)).st_size
+
     @lru_cache()
     def string_to_id(self, string):
         if self.__path is None:

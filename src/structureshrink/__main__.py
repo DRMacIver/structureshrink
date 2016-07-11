@@ -291,7 +291,7 @@ def shrinker(
                 continue
             with open(path, 'rb') as i:
                 contents = i.read()
-            shrinker.classify(contents)
+            shrinker.incorporate(contents)
             del contents
         count = 0
         total = len(os.listdir(history))

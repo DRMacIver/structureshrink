@@ -83,6 +83,10 @@ class Shrinker(object):
     def best(self, label):
         return self.__table.id_to_string(self.__best[label])
 
+    def incorporate(self, string):
+        if cache_key(string) not in self.__seen:
+            self.classify(string)
+
     def classify(self, string):
         key = cache_key(string)
         self.__seen.add(key)
@@ -92,7 +96,6 @@ class Shrinker(object):
             result = None
         else:
             string = preprocessed
-            preprocess_key = cache_key(preprocessed)
             result = self.__classify(preprocessed)
 
             new_labels = set()
@@ -337,7 +340,11 @@ class Shrinker(object):
                 options = [label]
             else:
                 options = list(self.__best)
-            self.__random.shuffle(options)
+                self.__random.shuffle(options)
+                options.sort(
+                    key=lambda x: self.__table.id_to_size(self.__best[x]),
+                    reverse=True
+                )
             for label in options:
                 if label in self.__shrunk_labels:
                     continue
