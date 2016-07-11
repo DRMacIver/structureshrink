@@ -388,17 +388,17 @@ class Shrinker(object):
                 if should_stop():
                     break
 
-                if self.pass_enabled('brackets'):
-                    self.debug('Minimizing bracketwise')
-                    self.bracket_partition(self.best(label), criterion)
-                    self.bracket_shrink(self.best(label), criterion)
+                if self.pass_enabled('charwise'):
+                    self.debug('Minimizing by partition')
+                    self.partition_charwise(self.best(label), criterion)
 
                     if should_stop():
                         break
 
-                if self.pass_enabled('charwise'):
-                    self.debug('Minimizing by partition')
-                    self.partition_charwise(self.best(label), criterion)
+                if self.pass_enabled('brackets'):
+                    self.debug('Minimizing bracketwise')
+                    self.bracket_partition(self.best(label), criterion)
+                    self.bracket_shrink(self.best(label), criterion)
 
                     if should_stop():
                         break
