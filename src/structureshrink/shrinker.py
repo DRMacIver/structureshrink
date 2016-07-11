@@ -2,6 +2,7 @@ import hashlib
 from collections import OrderedDict, Counter
 from enum import IntEnum
 from structureshrink.stringtable import StringTable
+import random
 
 
 class Volume(IntEnum):
@@ -30,7 +31,7 @@ class Shrinker(object):
         initial, classify, *,
         preprocess=None, shrink_callback=None, printer=None,
         volume=Volume.quiet,
-        passes=None, table_path=':memory:'
+        passes=None, table_path=':memory:', seed=None
     ):
         self.__interesting_ngrams = set()
         self.__shrink_callback = shrink_callback or (lambda s, r: None)
@@ -46,6 +47,11 @@ class Shrinker(object):
         self.__best = OrderedDict()
         self.shrinks = 0
         self.__fully_shrunk = set()
+        self.__shrunk_labels = set()
+        if seed is not None:
+            self.__random = random.Random(seed)
+        else:
+            self.__random = random.Random()
         preprocessed = self.__preprocess(initial)
         if preprocessed is None:
             raise ValueError('Initial example is rejected by preprocessing')
@@ -142,6 +148,8 @@ class Shrinker(object):
                 for label in new_labels | modified_labels:
                     self.__best[label] = string_id
                 self.__shrink_callback(string, new_labels | modified_labels)
+            self.__shrunk_labels -= new_labels
+            self.__shrunk_labels -= modified_labels
         return result
 
     def __suitable_ngrams(self, label):
@@ -328,11 +336,13 @@ class Shrinker(object):
             if target_label is not None:
                 options = [label]
             else:
-                options = sorted(
-                    self.__best, key=lambda l: sort_key(self.best(l))
-                )
+                options = list(self.__best)
+            self.__random.shuffle(options)
             for label in options:
+                if label in self.__shrunk_labels:
+                    continue
                 current = self.best(label)
+                original_content = current
                 key = cache_key(current)
                 if key in self.__fully_shrunk:
                     continue
@@ -423,6 +433,8 @@ class Shrinker(object):
 
                 if initial_shrinks == self.shrinks:
                     self.__fully_shrunk.add(key)
+                    if original_content == self.best(label):
+                        self.__shrunk_labels.add(label)
                 else:
                     assert prev != self.shrinks
                     break
