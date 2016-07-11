@@ -1,53 +1,34 @@
-import sqlite3
 from contextlib import contextmanager
 import hashlib
 from functools import lru_cache
+import os
 
 
 class StringTable(object):
 
     def __init__(self, path):
-        self.__database = sqlite3.connect(path)
-        with self.__cursor() as c:
-            c.execute("""
-                create table if not exists string_mapping(
-                    id integer primary key,
-                    hash text unique,
-                    data blob
-                )
-            """)
+        if path == ":memory:":
+            path = None
+        self.__path = path
 
     @lru_cache()
     def id_to_string(self, id):
-        with self.__cursor() as c:
-            c.execute("""select data from string_mapping where id=?""", (id,))
-            for (data,) in c:
-                return data
-            raise KeyError('No string with ID %r' % (id,))
+        if self.__path is None:
+            return id
+        target = os.path.join(self.__path, id)
+        with open(target, 'rb') as i:
+            return i.read()
 
     @lru_cache()
     def string_to_id(self, string):
-        with self.__cursor() as c:
-            hash = hashlib.sha1(string).hexdigest()
-            c.execute('select id from string_mapping where hash=?', (
-                hash,))
-            for (id,) in c:
-                return id
-            c.execute('insert into string_mapping (hash, data) values(?, ?)', (
-                hash, string))
-            return c.lastrowid
-
-    @contextmanager
-    def __cursor(self):
-        conn = self.__database
-        cursor = conn.cursor()
-        try:
+        if self.__path is None:
+            return string
+        hash = hashlib.sha1(string).hexdigest()[:8]
+        target = os.path.join(self.__path, hash)
+        if not os.path.exists(target):
             try:
-                yield cursor
-            finally:
-                cursor.close()
-        except:
-            conn.rollback()
-            raise
-        else:
-            conn.commit()
+                with open(target, 'xb') as o:
+                    o.write(string)
+            except FileExistsError:
+                pass
+        return hash

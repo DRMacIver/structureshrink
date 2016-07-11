@@ -271,7 +271,7 @@ def shrinker(
         shrink_callback=shrink_callback, printer=click.echo,
         preprocess=preprocessor,
         passes=passes or None,
-        table_path=os.path.join(shrinks, 'strings.db')
+        table_path=shrinks,
     )
     initial_labels = shrinker.classify(initial)
     initial_label = [f for f in initial_labels if f.startswith('exit:')][0]
