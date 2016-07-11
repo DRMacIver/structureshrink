@@ -431,10 +431,10 @@ class Shrinker(object):
                             self.debug('Minimized ngram %r to %r' % (
                                 ngram, result))
 
+                if original_content == self.best(label):
+                    self.__shrunk_labels.add(label)
                 if initial_shrinks == self.shrinks:
                     self.__fully_shrunk.add(key)
-                    if original_content == self.best(label):
-                        self.__shrunk_labels.add(label)
                 else:
                     assert prev != self.shrinks
                     break
