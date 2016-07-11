@@ -266,12 +266,18 @@ def shrinker(
             except FileNotFoundError:
                 pass
             os.link(history_file, path)
+    content = os.path.join(shrinks, 'content')
+    try:
+        os.mkdir(content)
+    except OSError:
+        pass
+
     shrinker = Shrinker(
         initial, classify_data, volume=volume,
         shrink_callback=shrink_callback, printer=click.echo,
         preprocess=preprocessor,
         passes=passes or None,
-        table_path=shrinks,
+        table_path=content,
     )
     initial_labels = shrinker.classify(initial)
     initial_label = [f for f in initial_labels if f.startswith('exit:')][0]
