@@ -341,10 +341,6 @@ class Shrinker(object):
             else:
                 options = list(self.__best)
                 self.__random.shuffle(options)
-                options.sort(
-                    key=lambda x: self.__table.id_to_size(self.__best[x]),
-                    reverse=True
-                )
             for label in options:
                 if label in self.__shrunk_labels:
                     continue
