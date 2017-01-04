@@ -1,6 +1,7 @@
 import hashlib
 from collections import OrderedDict, Counter
 from enum import IntEnum
+from functools import cmp_to_key
 
 
 class Volume(IntEnum):
@@ -31,7 +32,6 @@ class Shrinker(object):
         volume=Volume.quiet, principal_only=False,
         passes=None
     ):
-        self.__interesting_ngrams = set()
         self.__shrink_callback = shrink_callback or (lambda s, r: None)
         self.__printer = printer or (lambda s: None)
         self.__inital = initial
@@ -42,6 +42,8 @@ class Shrinker(object):
         self.__cache = {}
         self.__preprocess_cache = {}
         self.__best = OrderedDict()
+        self.__regions = {}
+
         self.shrinks = 0
         preprocessed = self.__preprocess(initial)
         if preprocessed is None:
@@ -100,6 +102,7 @@ class Shrinker(object):
                 result not in self.best or
                 sort_key(string) < sort_key(self.best[result])
             ):
+                self.__regions.pop(result, None)
                 self.shrinks += 1
                 if self.best:
                     if result not in self.best:
@@ -297,6 +300,14 @@ class Shrinker(object):
             if string == initial:
                 level += 1
 
+    def regions(self, label):
+        try:
+            return self.__regions[label]
+        except KeyError:
+            print("Recalculating")
+            self.__regions[label] = _calculate_regions(self.best[label])
+            return self.__regions[label]
+
     def shrink(self):
         prev = -1
         while prev != self.shrinks:
@@ -315,73 +326,27 @@ class Shrinker(object):
                     continue
                 if self.classify(b'') == label:
                     continue
-                self.output(
-                    'Shrinking for label %r from %d bytes (%d distinct)' % (
-                        label, len(current), len(set(current))))
 
-                if self.pass_enabled('split'):
-                    lo = 0
-                    hi = len(current)
-                    while lo + 1 < hi:
-                        mid = (lo + hi) // 2
-                        if self.classify(current[:mid]) == label:
-                            hi = mid
-                        else:
-                            lo = mid
+                k = 1
+                while k > 0:
+                    initial_shrinks = self.shrinks
 
-                initial_shrinks = self.shrinks
-
-                def criterion(string):
-                    return self.classify(string) == label
-
-                if self.pass_enabled('brackets'):
-                    self.debug('Minimizing bracketwise')
-                    self.bracket_partition(self.best[label], criterion)
-                    self.bracket_shrink(
-                        self.best[label], lambda c: self.classify(c) == label
-                    )
-
-                    if initial_shrinks != self.shrinks:
-                        continue
-
-                if self.pass_enabled('charwise'):
-                    self.debug('Minimizing by partition')
-                    self.partition_charwise(self.best[label], criterion)
-
-                    if initial_shrinks != self.shrinks:
-                        continue
-
-                if self.pass_enabled('bytewise'):
-                    self.debug('Minimizing by bytes')
-                    _bytemin(
-                        self.best[label], lambda b: self.classify(b) == label)
-
-                    if initial_shrinks != self.shrinks:
-                        continue
-
-                if self.pass_enabled('ngrams'):
-                    for ngram in self.__suitable_ngrams(label):
-                        if len(ngram) <= 1:
-                            continue
-                        initial = self.best[label].split(ngram)
-                        if len(initial) <= 1:
-                            continue
-                        self.debug('Partitioning by ngram %r' % (
-                            ngram,))
-                        shrunk = _ddmin(initial, lambda ls: criterion(
-                            ngram.join(ls)))
-                        if len(shrunk) <= 1:
-                            continue
-                        self.debug('Attempting to minimize ngram %r' % (
-                            ngram,))
-                        result = _bytemin(
-                            ngram, lambda ng: criterion(ng.join(shrunk)))
-                        if ngram != result:
-                            self.debug('Minimized ngram %r to %r' % (
-                                ngram, result))
-
-                    if initial_shrinks != self.shrinks:
-                        continue
+                    i = 0
+                    while i + k <= len(self.regions(label)):
+                        bitmask = [True] * len(self.best[label])
+                        for r in self.regions(label)[i:i+k]:
+                            for i in r:
+                                bitmask[i] = False
+                        assert not all(bitmask)
+                        if self.classify(bytes(
+                            c for c, i in zip(self.best[label], bitmask)
+                            if i
+                        )) != label:
+                            i += k
+                    if self.shrinks == initial_shrinks:
+                        k //= 2
+                    else:
+                        k = max(k, len(self.regions(label)) // 2)
 
 
 def ngrams(string):
@@ -514,3 +479,65 @@ def detect_possible_brackets(string):
         for b in ls
         if string.index(a) < string.index(b)
     ], key=lambda x: counts[x[0]], reverse=True)
+
+
+class denseset(object):
+    def __init__(self, start, finish):
+        self.start = start
+        self.finish = finish
+        self.__hash = None
+
+    def __len__(self):
+        return self.finish - self.start
+
+    def __iter__(self):
+        return iter(range(self.start, self.finish))
+
+    def __eq__(self, other):
+        if isinstance(other, denseset):
+            return self.start == other.start and self.finish == other.finish
+        return frozenset(self) == other
+
+    def __ne__(self, other):
+        r = self.__eq__(other)
+        if r is NotImplemented:
+            return r
+        else:
+            return not r
+
+
+def _calculate_regions(string):
+    print("Hi?")
+    result = set()
+    index = {}
+    for i, c in enumerate(string):
+        index.setdefault(c, []).append(i)
+    for c, poses in index.items():
+        result.add(frozenset(poses))
+        for i, u in enumerate(poses[:-1]):
+            result.add(frozenset(denseset(u, poses[i+1])))
+    result = list(result)
+    print("Calculated", len(result))
+
+    def cmp(r, s):
+        if len(r) > len(s):
+            return -1
+        if len(r) < len(s):
+            return 1
+        r = sorted(r)
+        s = sorted(s)
+        for u, v in zip(r, s):
+            if string[u] < string[v]:
+                return 1
+            if string[u] > string[v]:
+                return -1
+        for u, v in zip(r, s):
+            if u < v:
+                return -1
+            if u > v:
+                return 1
+        return 0
+
+    result.sort(key=cmp_to_key(cmp))
+    print("Sorted")
+    return result
