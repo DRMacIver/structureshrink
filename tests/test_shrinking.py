@@ -1,28 +1,33 @@
-from structureshrink import shrink
-from hypothesis import given, strategies as st
-import hashlib
+from structureshrink import Shrinker, Volume
+from hypothesis import given, strategies as st, settings, note
 
 
-@given(st.binary(), st.random_module())
-def test_partition_by_length(b, _):
-    shrunk = shrink(b, len)
-    assert len(shrunk) == len(b) + 1
+@settings(max_examples=10**6, max_iterations=10**6, timeout=-1)
+@given(st.data())
+def test_partition_by_length(data):
+    labels = data.draw(
+        st.lists(st.integers(), unique=True, min_size=2), label="labels")
 
+    def classify(s):
+        return data.draw(
+            st.sampled_from(labels),
+            label="classify(%r)" % (s,))
+        
 
-@given(
-    st.lists(st.binary(min_size=1, max_size=4), min_size=1, max_size=5),
-    st.random_module()
-)
-def test_shrink_to_any_substring(ls, _):
-    shrunk = shrink(
-        b''.join(ls), lambda x: sum(l in x for l in ls)
-    )
-    assert len(shrunk) >= len(ls)
+    shrinker = Shrinker(
+        data.draw(st.binary(min_size=1)), classify, volume=Volume.debug)
+    shrinker.output = note
 
+    passes = {}
 
-def test_partition_by_last_byte():
-    seed = b''.join(bytes([i, j]) for i in range(256) for j in range(256))
-    shrunk = shrink(
-        seed, lambda s: hashlib.sha1(s).digest()[-1] & 127
-    )
-    assert len(shrunk) == 128
+    def pass_enabled(p):
+        try:
+            return passes[p]
+        except KeyError:
+            result = data.draw(st.booleans(), label=p)
+            passes[p] = result
+            return result
+
+    shrinker.pass_enabled = pass_enabled 
+
+    shrinker.shrink()

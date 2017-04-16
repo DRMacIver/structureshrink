@@ -41,12 +41,15 @@ def interrupt_wait_and_kill(sp):
         for pipe in [sp.stdout, sp.stderr, sp.stdin]:
             if pipe:
                 pipe.close()
-        signal_group(sp, signal.SIGINT)
-        for _ in range(10):
-            if sp.poll() is not None:
-                return
-            time.sleep(0.1)
-        signal_group(sp, signal.SIGKILL)
+        try:
+            signal_group(sp, signal.SIGINT)
+            for _ in range(10):
+                if sp.poll() is not None:
+                    return
+                time.sleep(0.1)
+            signal_group(sp, signal.SIGKILL)
+        except ProcessLookupError:
+            return
 
 
 @click.command(
