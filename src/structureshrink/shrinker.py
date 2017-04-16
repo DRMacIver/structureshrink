@@ -2,6 +2,8 @@ import hashlib
 from collections import OrderedDict, Counter
 from enum import IntEnum
 from random import Random
+from functools import total_ordering
+import heapq
 
 
 class Volume(IntEnum):
@@ -22,6 +24,8 @@ def cache_key(s):
 
 ALPHABET = [bytes([b]) for b in range(256)]
 
+NEWLINE = b'\n'
+
 
 class Shrinker(object):
 
@@ -30,8 +34,9 @@ class Shrinker(object):
         initial, classify, *,
         preprocess=None, shrink_callback=None, printer=None,
         volume=Volume.quiet, principal_only=False,
-        passes=None, seed=None
+        passes=None, seed=None, preserve_lines=False
     ):
+        self.__preserve_lines = preserve_lines
         self.__random = Random(seed)
         self.__interesting_ngrams = set()
         self.__shrink_callback = shrink_callback or (lambda s, r: None)
@@ -142,6 +147,16 @@ class Shrinker(object):
         self.__explain_lines.clear()
 
     def shrink_string(self, string, criterion):
+        if self.__preserve_lines:
+            def basic_partition(string):
+                return [s + NEWLINE for s in string.split(NEWLINE)]
+        else:
+            def basic_partition(string):
+                return [bytes([c]) for c in string]
+
+        def partition(string):
+            return merge_partition(basic_partition(string))
+
         if criterion(b''):
             return b''
 
@@ -153,19 +168,29 @@ class Shrinker(object):
             def tokenwise(f):
                 nonlocal string
                 assert criterion(string)
-                tokens = tokenize(string)
+                tokens = partition(string)
                 counts = Counter(tokens)
                 assert counts[b''] == 0
                 interesting = list(counts)
-                interesting.sort(key=shortlex, reverse=True)
-                interesting.sort(key=lambda s: string.count(s))
                 self.debug(
                     "Tokenized %d bytes into %d tokens (%d interesting)" % (
                         len(string), len(tokens), len(interesting)
                     ))
-                i = 0
-                while i < len(interesting):
-                    t = interesting[i]
+
+                used = set()
+
+                def make_queue():
+                    q = [
+                        (string.count(t), ReversedKey(shortlex(t)))
+                        for t in interesting
+                        if t not in used
+                    ]
+                    heapq.heapify(q)
+                    return q
+                queue = make_queue()
+                while queue:
+                    t = heapq.heappop(queue)[1].target[1]
+                    used.add(t)
                     if len(t) < len(string):
                         ls = string.split(t)
                         if len(ls) > 1:
@@ -177,8 +202,8 @@ class Shrinker(object):
                                 criterion(new_string)
                             ):
                                 string = new_string
+                                queue = make_queue()
                                 continue
-                    i += 1
 
             if self.pass_enabled('partition-shared'):
                 self.debug("Partitioning by tokens")
@@ -197,7 +222,7 @@ class Shrinker(object):
                 continue
 
             if self.pass_enabled('tokenwise'):
-                ls = tokenize(string)
+                ls = partition(string)
                 self.explain("Minimizing tokenwise")
                 string = b''.join(_partymin(
                     ls, lambda l: criterion(b''.join(l)), max_k=max_k))
@@ -224,12 +249,13 @@ class Shrinker(object):
             if string != prev:
                 continue
 
-            if self.pass_enabled("bytewise"):
+            if self.pass_enabled("basic"):
                 self.debug("Minimizing %d bytes" % (len(string),))
-                party = [bytes([c]) for c in string]
+                party = basic_partition(string)
                 string = b''.join(
-                    _partymin(party, lambda ls: criterion(b''.join(ls))),
-                    max_k=max_k)
+                    _partymin(
+                        party, lambda ls: criterion(b''.join(ls)), max_k=max_k)
+                )
 
             if string != prev:
                 continue
@@ -356,11 +382,15 @@ def shortlex(b):
 
 
 def tokenize(string):
-    if not string:
-        return []
-    if len(string) == 1:
-        return [string]
-    partition = [bytes(string[i:i+1]) for i in range(len(string))]
+    return merge_partition([bytes(string[i:i+1]) for i in range(len(string))])
+
+
+def merge_partition(partition):
+    partition = list(partition)
+    string = b''.join(partition)
+
+    if len(partition) <= 1:
+        return partition
 
     _tokens = {}
 
@@ -436,3 +466,15 @@ def intercalate(parts, t):
             result.append(t)
         result.extend(p)
     return result
+
+
+@total_ordering
+class ReversedKey(object):
+    def __init__(self, target):
+        self.target = target
+
+    def __eq__(self, other):
+        return isinstance(other, ReversedKey) and (self.target == other.target)
+
+    def __lt__(self, other):
+        return self.target > other.target
