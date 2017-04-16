@@ -160,6 +160,10 @@ class Shrinker(object):
         if criterion(b''):
             return b''
 
+        basic = basic_partition(string)
+        if len(basic) <= EXP_THRESHOLD:
+            return b''.join(_expmin(basic, lambda ls: criterion(b''.join(ls))))
+
         max_k = 1
         prev = None
         while prev != string or max_k <= MAX_K:
@@ -209,11 +213,12 @@ class Shrinker(object):
                 self.debug("Partitioning by tokens")
 
                 @tokenwise
-                def partition(ls, t):
+                def partition_shared(ls, t):
                     self.explain((
                         "Partitioning string of length %d by %r "
                         "into %d parts") % (
                         len(string), t, len(ls)))
+                    assert string == t.join(ls)
                     ls = _partymin(
                         ls, lambda x: criterion(t.join(x)), max_k=max_k)
                     return ls, t
