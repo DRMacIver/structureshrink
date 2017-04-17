@@ -110,8 +110,10 @@ class Shrinker(object):
                 result not in self.best or
                 sort_key(string) < sort_key(self.best[result])
             ):
-                self.shrinks += 1
-                if self.best:
+                if self.best and (
+                    not self.principal_only or result == self.__initial_label
+                ):
+                    self.shrinks += 1
                     if result not in self.best:
                         self.__process_explain()
                         self.output((
@@ -161,31 +163,29 @@ class Shrinker(object):
             return b''
 
         basic = basic_partition(string)
-        if len(basic) <= EXP_THRESHOLD:
-            return b''.join(_expmin(basic, lambda ls: criterion(b''.join(ls))))
+        if len(basic) <= MAX_K:
+            return b''.join(_partymin(
+                basic, lambda ls: criterion(b''.join(ls))))
 
-        max_k = 1
+        max_k = 2
         prev = None
         while prev != string or max_k <= MAX_K:
             prev = string
 
-            def tokenwise(f):
-                nonlocal string
+            if self.pass_enabled('partition-shared'):
+                self.debug("Partitioning by tokens")
+
+                used = set()
+
                 assert criterion(string)
                 tokens = partition(string)
                 counts = Counter(tokens)
                 assert counts[b''] == 0
                 interesting = list(counts)
-                self.debug(
-                    "Tokenized %d bytes into %d tokens (%d interesting)" % (
-                        len(string), len(tokens), len(interesting)
-                    ))
-
-                used = set()
 
                 def make_queue():
                     q = [
-                        (string.count(t), ReversedKey(shortlex(t)))
+                        ((-len(t), string.count(t)), ReversedKey(shortlex(t)))
                         for t in interesting
                         if t not in used
                     ]
@@ -195,64 +195,55 @@ class Shrinker(object):
                 while queue:
                     t = heapq.heappop(queue)[1].target[1]
                     used.add(t)
-                    if len(t) < len(string):
-                        ls = string.split(t)
-                        if len(ls) > 1:
-                            assert t.join(ls) == string
-                            ls, t = f(ls, t)
-                            new_string = t.join(ls)
-                            if (
-                                string != new_string and
-                                criterion(new_string)
-                            ):
-                                string = new_string
-                                queue = make_queue()
-                                continue
+                    ls = string.split(t)
+                    if len(ls) > 1:
+                        assert t.join(ls) == string
+                        ls = intercalate(ls, t)
+                        assert b''.join(ls) == string
+                        ls = list(filter(None, ls))
+                        self.explain((
+                            "Partitioning string of length %d by %r "
+                            "into %d parts") % (
+                            len(string), t, len(ls)))
+                        orig = len(ls)
+                        ls = _partymin(
+                            ls, lambda x: criterion(b''.join(x)),
+                            max_k=max_k
+                        )
+                        new_string = b''.join(ls)
+                        assert criterion(new_string)
+                        if string != new_string:
+                            assert len(ls) < orig
+                            self.debug("Reduced to %d/%d parts" % (
+                                len(ls), orig))
+                            string = new_string
+                            queue = make_queue()
+                            continue
 
-            if self.pass_enabled('partition-shared'):
-                self.debug("Partitioning by tokens")
-
-                @tokenwise
-                def partition_shared(ls, t):
-                    self.explain((
-                        "Partitioning string of length %d by %r "
-                        "into %d parts") % (
-                        len(string), t, len(ls)))
-                    assert string == t.join(ls)
-                    ls = _partymin(
-                        ls, lambda x: criterion(t.join(x)), max_k=max_k)
-                    return ls, t
-
-            if string != prev:
-                continue
+            if self.pass_enabled('shared-shrink'):
+                tokens = partition(string)
+                for t, _ in sorted(
+                    Counter(tokens).items(),
+                    key=lambda x: (x[1], shortlex(x[0])),
+                    reverse=True
+                ):
+                    ls = string.split(t)
+                    if len(ls) <= 2:
+                        continue
+                    self.explain("Shrinking %r in %d parts " % (
+                        t, len(ls),
+                    ))
+                    s = self.shrink_string(t, lambda s: criterion(s.join(ls)))
+                    if t != s:
+                        self.debug("Shrunk %r to %r" % (t, s))
+                    string = s.join(ls)
 
             if self.pass_enabled('tokenwise'):
                 ls = partition(string)
-                self.explain("Minimizing tokenwise")
+                self.explain("Minimizing tokenwise from %d tokens" % (
+                    len(ls),))
                 string = b''.join(_partymin(
                     ls, lambda l: criterion(b''.join(l)), max_k=max_k))
-
-            if string != prev:
-                continue
-
-            if self.pass_enabled('shared-removal'):
-                @tokenwise
-                def remove(ls, t):
-                    self.explain("Removing %r" % (t,))
-                    return ls, b''
-
-            if string != prev:
-                continue
-
-            if self.pass_enabled('shared-shrink'):
-                @tokenwise
-                def shrink_token(ls, t):
-                    self.explain("Shrinking %r in %d" % (t, len(string)))
-                    return ls, self.shrink_string(
-                        t, lambda s: criterion(s.join(ls)))
-
-            if string != prev:
-                continue
 
             if self.pass_enabled("basic"):
                 self.debug("Minimizing %d bytes" % (len(string),))
@@ -262,10 +253,8 @@ class Shrinker(object):
                         party, lambda ls: criterion(b''.join(ls)), max_k=max_k)
                 )
 
-            if string != prev:
-                continue
-
-            max_k += 1
+            if string == prev:
+                max_k += 1
         return string
 
     def shrink(self):
@@ -296,7 +285,12 @@ class Shrinker(object):
                 self.shrink_string(self.best[label], criterion)
 
 
-def _expmin(ls, criterion):
+def _expmin(ls, criterion, sort_key=None):
+    if criterion([]):
+        return []
+    if sort_key is None:
+        def sort_key(b):
+            return shortlex(b''.join(b))
     subsets = []
     for s in range(1, 2 ** len(ls) - 1):
         bits = []
@@ -307,37 +301,14 @@ def _expmin(ls, criterion):
             if not s:
                 break
         subsets.append(bits)
-    subsets.sort(key=lambda b: (len(b), shortlex(b''.join(b))))
+    subsets.sort(key=lambda b: (len(b), sort_key(b)))
     for bits in subsets:
         if criterion(bits):
             return bits
     return ls
 
 
-EXP_THRESHOLD = 5
-
-
-def _shortmin(ls, criterion):
-    prev = None
-    while prev != ls:
-        prev = ls
-
-        i = 0
-        while i < len(ls):
-            j = len(ls) - 1
-            while j > i:
-                if len(ls) <= EXP_THRESHOLD:
-                    return _expmin(ls, criterion)
-
-                if j <= len(ls):
-                    ts = list(ls)
-                    del ts[i:j]
-                    assert len(ts) < len(ls)
-                    if criterion(ts):
-                        ls = ts
-                j -= 1
-            i += 1
-    return ls
+EXP_THRESHOLD = 4
 
 
 MAX_K = 16
@@ -347,11 +318,15 @@ def _partymin(ls, criterion, max_k=16):
     if criterion([]):
         return []
 
-    def calc():
-        return sorted(
-            range(len(ls)), key=lambda i: shortlex(ls[i]), reverse=True)
+    if len(ls) <= EXP_THRESHOLD:
+        return _expmin(ls, criterion)
 
     for k in range(1, max_k + 1):
+        def calc():
+            return sorted(
+                range(len(ls) + 1 - k),
+                key=lambda i: shortlex(b''.join(ls[i:i+k])), reverse=True)
+
         indices = calc()
 
         prev = None
@@ -359,19 +334,23 @@ def _partymin(ls, criterion, max_k=16):
             prev = ls
             i = 0
             while i < len(indices):
-                if len(ls) <= max(max_k, EXP_THRESHOLD):
-                    return _shortmin(ls, criterion)
-                assert len(ls) == len(indices)
+                if (
+                    len(ls) <= EXP_THRESHOLD or
+                    2 ** len(ls) <= len(ls) * (max_k - k)
+                ):
+                    return _expmin(ls, criterion)
                 j = indices[i]
-                if j + k <= len(ls):
-                    ts = list(ls)
-                    del ts[j:j+k]
-                    assert len(ts) + k == len(ls)
-                    if criterion(ts):
-                        ls = ts
-                        indices = calc()
-                        continue
+                assert j + k <= len(ls)
+                ts = list(ls)
+                del ts[j:j+k]
+                assert len(ts) + k == len(ls)
+                if criterion(ts):
+                    ls = ts
+                    indices = calc()
+                    continue
                 i += 1
+    if len(ls) <= EXP_THRESHOLD:
+        ls = _expmin(ls, criterion)
     return ls
 
 
@@ -392,10 +371,11 @@ def tokenize(string):
 
 def merge_partition(partition):
     partition = list(partition)
-    string = b''.join(partition)
-
     if len(partition) <= 1:
         return partition
+    string = b''.join(partition)
+
+    assert b''.join(partition) == string
 
     _tokens = {}
 
@@ -469,7 +449,7 @@ def intercalate(parts, t):
     for i, p in enumerate(parts):
         if i > 0:
             result.append(t)
-        result.extend(p)
+        result.append(p)
     return result
 
 
