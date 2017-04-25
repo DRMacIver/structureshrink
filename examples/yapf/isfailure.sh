@@ -20,7 +20,7 @@ pep8 engine.py || exit 2
 
 # Do a full flake8 lint (much slower) which will check for valid variable
 # defintiions etc.
-flake8 engine.py || exit 3
+#flake8 engine.py || exit 3
 
 # Actually try to run it.
 python engine.py || exit 4
