@@ -46,12 +46,11 @@ class RunIsComplete(Exception):
 
 
 class ConjectureRunner(object):
+
     def __init__(
-            self,
-            test_function,
-            settings=None,
-            random=None,
-            database_key=None, ):
+        self, test_function, settings=None, random=None,
+        database_key=None,
+    ):
         self._test_function = test_function
         self.settings = settings or Settings()
         self.last_data = None
@@ -71,8 +70,9 @@ class ConjectureRunner(object):
     def new_buffer(self):
         self.last_data = ConjectureData(
             max_length=self.settings.buffer_size,
-            draw_bytes=
-            lambda data, n, distribution: distribution(self.random, n))
+            draw_bytes=lambda data, n, distribution:
+            distribution(self.random, n)
+        )
         self.test_function(self.last_data)
         self.last_data.freeze()
 
@@ -91,8 +91,12 @@ class ConjectureRunner(object):
         finally:
             data.freeze()
             self.note_details(data)
-        if (data.status == Status.INTERESTING and
-            (self.last_data is None or data.buffer != self.last_data.buffer)):
+        if (
+            data.status == Status.INTERESTING and (
+                self.last_data is None or
+                data.buffer != self.last_data.buffer
+            )
+        ):
             self.debug_data(data)
         if data.status >= Status.VALID:
             self.valid_examples += 1
@@ -126,10 +130,14 @@ class ConjectureRunner(object):
         return True
 
     def save_buffer(self, buffer):
-        if (self.settings.database is not None and
-                self.database_key is not None and
-                Phase.reuse in self.settings.phases):
-            self.settings.database.save(self.database_key, hbytes(buffer))
+        if (
+            self.settings.database is not None and
+            self.database_key is not None and
+            Phase.reuse in self.settings.phases
+        ):
+            self.settings.database.save(
+                self.database_key, hbytes(buffer)
+            )
 
     def note_details(self, data):
         if data.status == Status.INTERESTING:
@@ -144,17 +152,21 @@ class ConjectureRunner(object):
             debug_report(message)
 
     def debug_data(self, data):
-        self.debug(u'%d bytes %s -> %s, %s' %
-                   (data.index,
-                    unicode_safe_repr(list(data.buffer[:data.index])),
-                    unicode_safe_repr(data.status), data.output, ))
+        self.debug(u'%d bytes %s -> %s, %s' % (
+            data.index,
+            unicode_safe_repr(list(data.buffer[:data.index])),
+            unicode_safe_repr(data.status),
+            data.output,
+        ))
 
     def incorporate_new_buffer(self, buffer):
         if buffer in self.seen:
             return False
         assert self.last_data.status == Status.INTERESTING
-        if (self.settings.timeout > 0 and
-                time.time() >= self.start_time + self.settings.timeout):
+        if (
+            self.settings.timeout > 0 and
+            time.time() >= self.start_time + self.settings.timeout
+        ):
             self.exit_reason = ExitReason.timeout
             raise RunIsComplete()
         buffer = buffer[:self.last_data.index]
@@ -181,8 +193,9 @@ class ConjectureRunner(object):
             except RunIsComplete:
                 pass
             self.debug(
-                u'Run complete after %d examples (%d valid) and %d shrinks' %
-                (self.call_count, self.valid_examples, self.shrinks, ))
+                u'Run complete after %d examples (%d valid) and %d shrinks' % (
+                    self.call_count, self.valid_examples, self.shrinks,
+                ))
 
     def _new_mutator(self):
         def draw_new(data, n, distribution):
@@ -215,7 +228,8 @@ class ConjectureRunner(object):
                 return distribution(self.random, n)
 
         def flip_bit(data, n, distribution):
-            buf = bytearray(self.last_data.buffer[data.index:data.index + n])
+            buf = bytearray(
+                self.last_data.buffer[data.index:data.index + n])
             i = self.random.randint(0, n - 1)
             k = self.random.randint(0, 7)
             buf[i] ^= (1 << k)
@@ -225,27 +239,27 @@ class ConjectureRunner(object):
             return b'\0' * n
 
         def draw_constant(data, n, distribution):
-            return bytes_from_list([self.random.randint(0, 255)] * n)
+            return bytes_from_list([
+                self.random.randint(0, 255)
+            ] * n)
 
         options = [
             draw_new,
-            reuse_existing,
-            reuse_existing,
-            draw_existing,
-            draw_smaller,
-            draw_larger,
-            flip_bit,
-            draw_zero,
-            draw_constant,
+            reuse_existing, reuse_existing,
+            draw_existing, draw_smaller, draw_larger,
+            flip_bit, draw_zero, draw_constant,
         ]
 
-        bits = [self.random.choice(options) for _ in hrange(3)]
+        bits = [
+            self.random.choice(options) for _ in hrange(3)
+        ]
 
         def draw_mutated(data, n, distribution):
-            if (data.index + n > len(self.last_data.buffer)):
+            if (
+                data.index + n > len(self.last_data.buffer)
+            ):
                 return distribution(self.random, n)
             return self.random.choice(bits)(data, n, distribution)
-
         return draw_mutated
 
     def _run(self):
@@ -253,17 +267,21 @@ class ConjectureRunner(object):
         mutations = 0
         start_time = time.time()
 
-        if (self.settings.database is not None and
-                self.database_key is not None):
+        if (
+            self.settings.database is not None and
+            self.database_key is not None
+        ):
             corpus = sorted(
                 self.settings.database.fetch(self.database_key),
-                key=lambda d: (len(d), d))
+                key=lambda d: (len(d), d)
+            )
             for existing in corpus:
                 if self.valid_examples >= self.settings.max_examples:
                     self.exit_reason = ExitReason.max_examples
                     return
-                if self.call_count >= max(self.settings.max_iterations,
-                                          self.settings.max_examples):
+                if self.call_count >= max(
+                    self.settings.max_iterations, self.settings.max_examples
+                ):
                     self.exit_reason = ExitReason.max_iterations
                     return
                 data = ConjectureData.for_buffer(existing)
@@ -271,7 +289,8 @@ class ConjectureRunner(object):
                 data.freeze()
                 self.last_data = data
                 if data.status < Status.VALID:
-                    self.settings.database.delete(self.database_key, existing)
+                    self.settings.database.delete(
+                        self.database_key, existing)
                 elif data.status == Status.VALID:
                     # Incremental garbage collection! we store a lot of
                     # examples in the DB as we shrink: Those that stay
@@ -279,16 +298,18 @@ class ConjectureRunner(object):
                     # dropped, but those that are merely valid gradually go
                     # away over time.
                     if self.random.randint(0, 2) == 0:
-                        self.settings.database.delete(self.database_key,
-                                                      existing)
+                        self.settings.database.delete(
+                            self.database_key, existing)
                 else:
                     assert data.status == Status.INTERESTING
                     self.last_data = data
                     break
 
         if Phase.generate in self.settings.phases:
-            if (self.last_data is None or
-                    self.last_data.status < Status.INTERESTING):
+            if (
+                self.last_data is None or
+                self.last_data.status < Status.INTERESTING
+            ):
                 self.new_buffer()
 
             mutator = self._new_mutator()
@@ -296,12 +317,15 @@ class ConjectureRunner(object):
                 if self.valid_examples >= self.settings.max_examples:
                     self.exit_reason = ExitReason.max_examples
                     return
-                if self.call_count >= max(self.settings.max_iterations,
-                                          self.settings.max_examples):
+                if self.call_count >= max(
+                    self.settings.max_iterations, self.settings.max_examples
+                ):
                     self.exit_reason = ExitReason.max_iterations
                     return
-                if (self.settings.timeout > 0 and
-                        time.time() >= start_time + self.settings.timeout):
+                if (
+                    self.settings.timeout > 0 and
+                    time.time() >= start_time + self.settings.timeout
+                ):
                     self.exit_reason = ExitReason.timeout
                     return
                 if mutations >= self.settings.max_mutations:
@@ -311,7 +335,8 @@ class ConjectureRunner(object):
                 else:
                     data = ConjectureData(
                         draw_bytes=mutator,
-                        max_length=self.settings.buffer_size)
+                        max_length=self.settings.buffer_size
+                    )
                     self.test_function(data)
                     data.freeze()
                     prev_data = self.last_data
@@ -366,10 +391,10 @@ class ConjectureRunner(object):
                             bitmask[t] = False
 
                     u, v = self.last_data.intervals[i]
-                    if not self.incorporate_new_buffer(
-                            hbytes(b
-                                   for b, v in zip(self.last_data.buffer,
-                                                   bitmask) if v)):
+                    if not self.incorporate_new_buffer(hbytes(
+                        b for b, v in zip(self.last_data.buffer, bitmask)
+                        if v
+                    )):
                         i += k
                 k //= 2
 
@@ -401,13 +426,15 @@ class ConjectureRunner(object):
                 buf = self.last_data.buffer
                 block = buf[u:v]
                 n = v - u
-                all_blocks = sorted(
-                    set([bytes(n)] + [
-                        buf[a:a + n] for a in self.last_data.block_starts[n]
-                    ]))
+                all_blocks = sorted(set([bytes(n)] + [
+                    buf[a:a + n]
+                    for a in self.last_data.block_starts[n]
+                ]))
                 better_blocks = all_blocks[:all_blocks.index(block)]
                 for b in better_blocks:
-                    if self.incorporate_new_buffer(buf[:u] + b + buf[v:]):
+                    if self.incorporate_new_buffer(
+                        buf[:u] + b + buf[v:]
+                    ):
                         break
                 i += 1
 
@@ -416,9 +443,10 @@ class ConjectureRunner(object):
             while block_counter < self.changed:
                 block_counter = self.changed
                 blocks = [
-                    k
-                    for k, count in Counter(self.last_data.buffer[u:v] for u, v
-                                            in self.last_data.blocks).items()
+                    k for k, count in
+                    Counter(
+                        self.last_data.buffer[u:v]
+                        for u, v in self.last_data.blocks).items()
                     if count > 1
                 ]
                 for block in blocks:
@@ -429,11 +457,13 @@ class ConjectureRunner(object):
 
                     def replace(b):
                         return b''.join(
-                            bytes(b if c == block else c) for c in parts)
-
-                    minimize(block,
-                             lambda b: self.incorporate_new_buffer(replace(b)),
-                             self.random)
+                            bytes(b if c == block else c) for c in parts
+                        )
+                    minimize(
+                        block,
+                        lambda b: self.incorporate_new_buffer(replace(b)),
+                        self.random
+                    )
 
             if change_counter != self.changed:
                 self.debug('Restarting')
@@ -441,9 +471,9 @@ class ConjectureRunner(object):
 
             self.debug('Lexicographical minimization of whole buffer')
             minimize(
-                self.last_data.buffer,
-                self.incorporate_new_buffer,
-                cautious=True)
+                self.last_data.buffer, self.incorporate_new_buffer,
+                cautious=True
+            )
 
             self.debug('Shrinking of individual blocks')
             i = 0
@@ -452,8 +482,10 @@ class ConjectureRunner(object):
                 minimize(
                     self.last_data.buffer[u:v],
                     lambda b: self.incorporate_new_buffer(
-                        self.last_data.buffer[:u] + b + self.last_data.buffer[v:], ),
-                    self.random)
+                        self.last_data.buffer[:u] + b +
+                        self.last_data.buffer[v:],
+                    ), self.random
+                )
                 i += 1
 
             if change_counter != self.changed:
@@ -475,8 +507,9 @@ class ConjectureRunner(object):
                         b = buf[b_start:b_start + n]
                         if a <= b:
                             break
-                        swapped = (buf[:a_start] + b + buf[a_start + n:b_start]
-                                   + a + buf[b_start + n:])
+                        swapped = (
+                            buf[:a_start] + b + buf[a_start + n:b_start] +
+                            a + buf[b_start + n:])
                         assert len(swapped) == len(buf)
                         assert swapped < buf
                         if self.incorporate_new_buffer(swapped):
@@ -489,8 +522,9 @@ class ConjectureRunner(object):
                 self.debug('Restarting')
                 continue
 
-            self.debug('Shuffling suffixes while shrinking %r' %
-                       (self.last_data.bind_points, ))
+            self.debug('Shuffling suffixes while shrinking %r' % (
+                self.last_data.bind_points,
+            ))
             b = 0
             while b < len(self.last_data.bind_points):
                 cutoff = sorted(self.last_data.bind_points)[b]
@@ -510,9 +544,9 @@ class ConjectureRunner(object):
                         if self.incorporate_new_buffer(hbytes(buf)):
                             return True
                     return False
-
                 minimize(
-                    self.last_data.buffer[:cutoff], test_value, cautious=True)
+                    self.last_data.buffer[:cutoff], test_value, cautious=True
+                )
                 b += 1
 
         self.exit_reason = ExitReason.finished
