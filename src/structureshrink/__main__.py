@@ -150,6 +150,8 @@ def shrinker(
 
     seen_output = set()
 
+    first_call = True
+
     def classify_data(string):
         if filename == '-':
             sp = subprocess.Popen(
@@ -168,9 +170,17 @@ def shrinker(
                 os.rename(filename, backup)
                 with open(filename, 'wb') as o:
                     o.write(string)
+
+                nonlocal first_call
+                if first_call:
+                    target = sys.stdout
+                    first_call = False
+                else:
+                    target = subprocess.DEVNULL
+
                 sp = subprocess.Popen(
-                    test, stdout=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL, universal_newlines=False,
+                    test, stdout=target, stdin=target,
+                    stderr=target, universal_newlines=False,
                     preexec_fn=os.setsid,
                 )
                 try:

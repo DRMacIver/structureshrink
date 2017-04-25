@@ -4,6 +4,7 @@ from enum import IntEnum
 from random import Random
 from functools import total_ordering
 import heapq
+from structureshrink import combinators
 
 
 class Volume(IntEnum):
@@ -75,6 +76,8 @@ class Shrinker(object):
             self.__printer(text)
 
     def explain(self, text):
+        self.debug(text)
+        return
         self.__clear_explain()
         self.__explain_lines.append(text)
 
@@ -167,6 +170,31 @@ class Shrinker(object):
             return b''.join(_partymin(
                 basic, lambda ls: criterion(b''.join(ls))))
 
+        for (pass_name, pass_function) in [
+            ("First", combinators.one_pass_delete(1)),
+            ("Second", combinators.one_pass_delete(2)),
+            ("Exhaustive", combinators.exp_or_bust),
+            ("Full", combinators.full_partition_min),
+        ]:
+            @combinators.fixate
+            @combinators.tokenwise(set(partition(string)))
+            def run(partition, criterion):
+                if len(partition) <= 1:
+                    return partition
+                self.explain("%s pass shrink into %d parts" % (
+                    pass_name, len(partition)))
+                partition = filter(bool, partition)
+                return pass_function(partition, criterion)
+
+            assert criterion(string)
+            string = run(string, criterion)
+            assert criterion(string), string
+
+        return combinators.with_partition(
+            partition,
+            combinators.full_partition_min,
+        )(string, criterion)
+
         max_k = 2
         prev = None
         while prev != string or max_k <= MAX_K:
@@ -192,6 +220,20 @@ class Shrinker(object):
                     heapq.heapify(q)
                     return q
                 queue = make_queue()
+
+                while queue:
+                    t = heapq.heappop(queue)[1].target[1]
+                    self.explain("First pass delete for %r" % (t,))
+                    ls = string.split(t)
+                    ts = one_pass_delete(
+                        ls, lambda x: criterion(b''.join(x)),
+                        k=1,
+                    )
+                    if ts != ls:
+                        string = t.join(ts)
+
+                queue = make_queue()
+
                 while queue:
                     t = heapq.heappop(queue)[1].target[1]
                     used.add(t)
@@ -285,29 +327,6 @@ class Shrinker(object):
                 self.shrink_string(self.best[label], criterion)
 
 
-def _expmin(ls, criterion, sort_key=None):
-    if criterion([]):
-        return []
-    if sort_key is None:
-        def sort_key(b):
-            return shortlex(b''.join(b))
-    subsets = []
-    for s in range(1, 2 ** len(ls) - 1):
-        bits = []
-        for x in ls:
-            if s & 1:
-                bits.append(x)
-            s >>= 1
-            if not s:
-                break
-        subsets.append(bits)
-    subsets.sort(key=lambda b: (len(b), sort_key(b)))
-    for bits in subsets:
-        if criterion(bits):
-            return bits
-    return ls
-
-
 EXP_THRESHOLD = 4
 
 
@@ -318,37 +337,17 @@ def _partymin(ls, criterion, max_k=16):
     if criterion([]):
         return []
 
-    if len(ls) <= EXP_THRESHOLD:
-        return _expmin(ls, criterion)
-
     for k in range(1, max_k + 1):
-        def calc():
-            return sorted(
-                range(len(ls) + 1 - k),
-                key=lambda i: shortlex(b''.join(ls[i:i+k])), reverse=True)
-
-        indices = calc()
-
         prev = None
         while ls != prev:
             prev = ls
-            i = 0
-            while i < len(indices):
-                if (
-                    len(ls) <= EXP_THRESHOLD or
-                    2 ** len(ls) <= len(ls) * (max_k - k)
-                ):
-                    return _expmin(ls, criterion)
-                j = indices[i]
-                assert j + k <= len(ls)
-                ts = list(ls)
-                del ts[j:j+k]
-                assert len(ts) + k == len(ls)
-                if criterion(ts):
-                    ls = ts
-                    indices = calc()
-                    continue
-                i += 1
+
+            if (
+                len(ls) <= EXP_THRESHOLD or
+                2 ** len(ls) <= len(ls) * (max_k - k)
+            ):
+                return _expmin(ls, criterion)
+            ls = one_pass_delete(ls, criterion, k)
     if len(ls) <= EXP_THRESHOLD:
         ls = _expmin(ls, criterion)
     return ls
@@ -442,24 +441,3 @@ def split_list(ls, t):
         else:
             parts[-1].append(l)
     return parts
-
-
-def intercalate(parts, t):
-    result = []
-    for i, p in enumerate(parts):
-        if i > 0:
-            result.append(t)
-        result.append(p)
-    return result
-
-
-@total_ordering
-class ReversedKey(object):
-    def __init__(self, target):
-        self.target = target
-
-    def __eq__(self, other):
-        return isinstance(other, ReversedKey) and (self.target == other.target)
-
-    def __lt__(self, other):
-        return self.target > other.target
