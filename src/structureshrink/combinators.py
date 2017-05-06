@@ -57,6 +57,8 @@ def tokenwise(tokens):
 
     def accept(partition_shrinker):
         def shrink(self, target, criterion):
+
+            self.debug("Tokenwise for %d tokens" % (len(tokens),))
             assert isinstance(target, bytes)
             used = set()
             assert criterion(target)
@@ -65,8 +67,14 @@ def tokenwise(tokens):
             interesting = list(counts)
 
             def make_queue():
+                def score(t):
+                    p = target.split(t)
+                    if len(p) <= 2:
+                        return float('inf')
+                    return -(len(t) + sum(map(len, p)) / len(p))
+
                 q = [
-                    ((target.count(t)), ReversedKey(shortlex(t)))
+                    ((score(t)), ReversedKey(shortlex(t)))
                     for t in interesting
                     if t not in used
                 ]
@@ -78,7 +86,7 @@ def tokenwise(tokens):
                 t = heapq.heappop(queue)[1].target[1]
                 used.add(t)
                 ls = target.split(t)
-                if len(ls) <= 1:
+                if len(ls) <= 2:
                     continue
                 self.debug("Partioning by %r into %d parts and running %s" % (
                     t, len(ls), partition_shrinker.__name__,
@@ -150,6 +158,49 @@ def exp_or_bust(self, partition, criterion):
         return _expmin(self, partition, criterion)
     else:
         return partition
+
+
+def reheating(step):
+    def accept(self, partition, criterion):
+        k_bound = float('inf')
+        while k_bound > 1:
+            k = 1
+            while k < k_bound:
+                self.debug("k=%d" % (k,))
+                if len(partition) <= EXP_THRESHOLD:
+                    self.explain("Switching to expmin for %d parts" % (
+                        len(partition),
+                    ))
+                    return _expmin(self, partition, criterion)
+                shrunk = step(self, partition, criterion, k)
+                if shrunk != partition:
+                    partition = shrunk
+                    if k_bound > 1:
+                        k += 1
+                else:
+                    k_bound = k
+                    k = 1
+        return partition
+    accept.__name__ = "reheating(%s)" % (step.__name__,)
+    return accept
+
+
+def delete_similar(self, partition, criterion, k):
+    indices = list(range(len(partition)))
+    self.random.shuffle(indices)
+    for i in indices:
+        count = k
+        for j in range(i + 1, len(partition)):
+            if partition[j] == partition[i]:
+                count -= 1
+                if count == 0:
+                    shrunk = partition[:i] + partition[j:]
+                    assert len(shrunk) < len(partition)
+                    if criterion(shrunk):
+                        return shrunk
+                    else:
+                        break
+    return partition
 
 
 def rand_shrink(self, partition, criterion):
