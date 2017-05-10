@@ -4,6 +4,7 @@ from enum import IntEnum
 from random import Random
 import sys
 from contextlib import contextmanager
+import time
 
 
 class Volume(IntEnum):
@@ -26,11 +27,13 @@ NEWLINE = b'\n'
 SHORT = 8
 
 
-def phase(phase):
-    def accept(self, *args, **kwargs):
-        with self.in_phase(phase.__name__.replace("_", " ")):
-            return phase(self, *args, **kwargs)
-    return accept
+def phase(name):
+    def wrap(function):
+        def accept(self, *args, **kwargs):
+            with self.in_phase(name):
+                return function(self, *args, **kwargs)
+        return accept
+    return wrap
 
 
 class Shrinker(object):
@@ -44,7 +47,7 @@ class Shrinker(object):
     ):
         self.phase_name = None
         self.__indent = 0
-        self.__dots = 0
+        self.__status_length = 0
         self.__preserve_lines = preserve_lines
         self.random = Random(seed)
         self.__interesting_ngrams = set()
@@ -91,39 +94,28 @@ class Shrinker(object):
 
     def debug(self, text):
         if self.__volume >= Volume.debug:
+            if self.phase_name is not None:
+                text = "[%s] %s" % (self.phase_name, text)
             self.__echo(text)
 
-    @contextmanager
-    def context(self, name):
-        if self.__volume >= Volume.debug:
-            self.debug("Starting: " + name)
-            self.__indent += 1
-            try:
-                yield
-            finally:
-                self.__indent -= 1
-                self.debug("Finishing: " + name)
-                if self.__indent == 0:
-                    self.debug("")
-        else:
-            yield
-
     def __echo(self, text):
-        if self.__dots > 0:
-            self.__clear_dots()
+        self.__clear_status()
         self.__printer("  " * self.__indent + text)
 
-    def __clear_dots(self):
+    def __clear_status(self):
         sys.stdout.write('\r')
-        sys.stdout.write(' ' * (
-            self.__dots + len(self.phase_name or '') + 3))
+        sys.stdout.write(' ' * self.__status_length)
         sys.stdout.write('\r')
+        self.__status_length = 0
+
+    def __write_status(self, text):
+        sys.stdout.write(text)
+        self.__status_length += len(text)
         sys.stdout.flush()
-        self.__dots = 0
 
     @property
     def __byte_sort_key(self):
-        return self.__byte_order.__getitem__
+        return lambda b: self.__byte_order.setdefault(b, (0, b))
 
     @property
     def best(self):
@@ -140,12 +132,9 @@ class Shrinker(object):
             pass
 
         if self.__volume >= Volume.debug:
-            if self.__dots == 0 and self.phase_name is not None:
-                sys.stdout.write("(%s) " % (self.phase_name,))
-
-            sys.stdout.write(".")
-            sys.stdout.flush()
-            self.__dots += 1
+            if self.__status_length == 0 and self.phase_name is not None:
+                self.__write_status('(%s) ' % (self.phase_name,))
+            self.__write_status(".")
 
         keys = [key]
 
@@ -210,7 +199,6 @@ class Shrinker(object):
         while k_bound > 1:
             k = 1
             while k < k_bound:
-                self.debug("k=%d" % (k,))
                 indices = list(range(0, len(string) - k))
                 self.random.shuffle(indices)
                 for i in indices:
@@ -229,6 +217,22 @@ class Shrinker(object):
                     eager = False
         return string
 
+    @phase("targeted")
+    def targeted_delete_intervals(self, string, criterion):
+        i = 0
+        while i < len(string):
+            index = {}
+            for j in range(i + 1, len(string)):
+                index.setdefault(string[j], j)
+            for j in sorted(index.values(), reverse=True):
+                attempt = string[:i] + string[j:]
+                if criterion(attempt):
+                    string = attempt
+                    break
+            else:
+                i += 1
+
+    @phase("exhaustive")
     def expmin_string(self, string, criterion):
         if criterion(b''):
             return b''
@@ -333,127 +337,206 @@ class Shrinker(object):
                     break
             return string[i:i+k]
 
-    def adaptive_greedy_search_pass(self, test_case, predicate):
-        indices = list(range(len(test_case)))
-        self.random.shuffle(indices)
-
-        def from_indices(ix):
-            return [test_case[i] for i in sorted(ix)]
-
-        def index_predicate(ix):
-            return predicate(from_indices(ix))
-
-        i = 0
-        while i < len(indices):
-            def check(k):
-                return index_predicate(indices[:i] + indices[i + k:])
-            if check(1):
-                lo = 1
-                hi = 2
-                while i + hi <= len(indices) and check(hi):
-                    hi *= 2
-                if check(hi):
-                    indices = indices[:i]
-                    break
+    def __delete_pass_at(self, i, test_case, predicate):
+        def check(k):
+            return predicate(test_case[:i] + test_case[i + k:])
+        if check(1):
+            lo = 1
+            hi = 2
+            while i + hi <= len(test_case) and check(hi):
+                hi *= 2
+            if check(hi):
+                test_case = test_case[:i]
+            else:
                 while lo + 1 < hi:
                     mid = (lo + hi) // 2
                     if check(mid):
                         lo = mid
                     else:
                         hi = mid
-                indices = indices[:i] + indices[i + lo:]
-                assert index_predicate(indices)
+                test_case = test_case[:i] + test_case[i + lo:]
+            assert predicate(test_case)
+        return test_case
+
+    def adaptive_greedy_search_pass(self, test_case, predicate):
+        indices = list(range(len(test_case)))
+        self.random.shuffle(indices)
+
+        def ix_to_t(ix):
+            return [test_case[i] for i in sorted(ix)]
+
+        def index_predicate(ix):
+            return predicate(ix_to_t(ix))
+
+        i = 0
+        while i < len(indices):
+            indices = self.__delete_pass_at(i, indices, index_predicate)
             i += 1
-        return from_indices(indices)
-
-    @phase
-    def rand_structure_shrink_string(self, string, criterion):
-        done = set()
-        failures = 0
-        while failures < 100:
-            ngram = self.select_ngram(string)
-            if ngram is None:
-                break
-            if ngram in done or len(ngram) <= 1:
-                failures += 1
-                continue
-            done.add(ngram)
-            parts = string.split(ngram)
-            self.debug("Shrinking by splitting on %r into %d parts" % (
-                ngram, len(parts)))
-            assert len(parts) > 2
-            original = string
-
-            parts = self.adaptive_greedy_search_pass(
-                parts, lambda ls: criterion(ngram.join(ls)))
-
-            string = ngram.join(parts)
-
-            if string == original:
-                failures += 1
-            else:
-                failures = 0
-        return string
+        return ix_to_t(indices)
 
     @contextmanager
     def in_phase(self, phase_name):
         original = self.phase_name
+        if original is not None:
+            phase_name = "%s > %s" % (original, phase_name)
+        self.__clear_status()
         try:
             self.phase_name = phase_name
             yield
         finally:
             self.phase_name = original
-            self.__clear_dots()
+            self.__clear_status()
 
-    @phase
-    def partition_shrink(self, string, criterion):
-        partition = []
-        i = 0
-        n = len(string)
-        while i < n:
-            indices = self.__index_ngrams(string, i)
-            k = max(1, len(indices))
-            partition.append(string[i:i+k])
-            i += k
-        assert b''.join(partition) == string
-        return b''.join(self.adaptive_greedy_search_pass(
-            partition, lambda ls: criterion(b''.join(ls))
-        ))
-
-    @phase
-    def structure_shrink_string(self, string, criterion):
-        self.debug("Structured shrinking")
-        iter_order = list(range(len(string)))
-        self.random.shuffle(iter_order)
-        for i in iter_order:
-            n = len(string)
-            if i >= n:
-                continue
-            indices = self.__index_ngrams(string, i)
-            if indices:
-                targets = sorted({ix[0] for ix in indices}, reverse=True)
-                self.explain(
-                    "Trying %d indices for prefixes of %r" % (
-                        len(targets), string[i:i+len(indices)],
-                    ))
-
-                for j in targets:
-                    attempt = string[:i] + string[j:]
-                    if criterion(attempt):
-                        string = attempt
-                        break
+    def __repeatedly_select_index(self, string, shrinker):
+        prev = None
+        while string != prev:
+            prev = string
+            string = self.__single_pass_select_index(string, shrinker)
         return string
 
-    @phase
+    def __single_pass_select_index(self, string, shrinker):
+        inds = list(range(len(string)))
+        self.random.shuffle(inds)
+        for i in inds:
+            if i < len(string):
+                string = shrinker(string, i)
+        return string
+
+    def __ngrams_at(self, string, i):
+        assert isinstance(string, bytes)
+
+        def count(k):
+            return string.count(string[i:i+k])
+
+        if count(1) <= 1:
+            return []
+        lo = 1
+        hi = 1
+        while count(hi) > 1 and hi < len(string) - 1:
+            hi *= 2
+        while lo + 1 < hi:
+            mid = (lo + hi) // 2
+            if count(mid) > 1:
+                lo = mid
+            else:
+                hi = mid
+
+        canon = {}
+        for k in range(1, hi):
+            t = string[i:i+k]
+            canon.setdefault(string.count(t), t)
+        return sorted(canon.values(), key=len, reverse=True)
+
+    def __all_ngrams(self, changing_string):
+        used_ngrams = set()
+        assert isinstance(changing_string(), bytes)
+
+        indices = list(range(len(changing_string())))
+        self.random.shuffle(indices)
+        for i in indices:
+            if i >= len(changing_string()):
+                continue
+            ngs = self.__ngrams_at(changing_string(), i)
+            for ng in ngs:
+                if ng not in used_ngrams:
+                    used_ngrams.add(ng)
+                    yield ng
+
+    @phase("ngram-killing")
+    def kill_ngrams(self, string, criterion):
+        tokens = self.tokenize(string)
+        counts = Counter(tokens)
+        targets = [t for t, k in counts.items() if k > 1]
+        targets.sort(key=lambda s: len(s) * counts[s])
+        new_targets = []
+        for t in targets:
+            attempt = b''.join([s for s in tokens if s != t])
+            if criterion(attempt):
+                string = attempt
+            else:
+                new_targets.append(t)
+        for t in new_targets:
+            def replace(s):
+                return b''.join([s if x == t else x for x in tokens])
+            s = self.basic_shrink_string(
+                t, lambda s: criterion(replace(s))
+            )
+            string = replace(s)
+        return string
+
+    def basic_shrink_string(self, string, criterion):
+        if len(set(string)) == 1:
+            for i in range(len(string)):
+                attempt = string[:i]
+                if criterion(attempt):
+                    return attempt
+            return string
+
+        threshold = 4
+        if criterion(b''):
+            return b''
+        else:
+            string = self.byte_shrink_string(string, criterion)
+            if len(string) <= threshold:
+                string = self.expmin_string(string, criterion)
+            return string
+
+    def structure_shrink_string_2(self, string, criterion):
+        cautious = True
+        hit_timeout = False
+        prev = None
+        timeout = 5
+        while cautious:
+            if hit_timeout:
+                timeout *= 2
+            elif prev == string:
+                cautious = False
+
+            prev = string
+            hit_timeout = False
+
+            for token in self.__all_ngrams(lambda: string):
+                parts = string.split(token)
+
+                if len(parts) <= 1:
+                    continue
+
+                with self.in_phase("structured[%s] > partition[%d] by %r" % (
+                    "cautious, %ds" % (
+                        timeout,) if cautious else "aggressive",
+                    len(parts), token,)
+                ):
+                    def ls_criterion(ls):
+                        return criterion(token.join(ls))
+
+                    if cautious:
+                        attempt = list(parts)
+                        t = self.random.randint(0, len(attempt) - 1)
+                        del attempt[t]
+                        if ls_criterion(attempt):
+                            parts = attempt
+                        else:
+                            continue
+                    if cautious:
+                        parts, timed_out = self.run_with_timeout(
+                            self.adaptive_greedy_search_pass,
+                            parts, ls_criterion,
+                            timeout,
+                        )
+                        hit_timeout = hit_timeout or timed_out
+                    else:
+                        parts = self.adaptive_greedy_search_pass(
+                            parts, ls_criterion
+                        )
+                    string = token.join(parts)
+        return string
+
+    @phase("bytewise")
     def byte_shrink_string(self, string, criterion):
-        self.debug("Shrinking bytewise")
         return bytes(self.adaptive_greedy_search_pass(
             list(string), lambda ls: criterion(bytes(ls))))
 
-    @phase
     def demarcated_shrink(self, string, criterion):
-        self.debug("Shrinking demarcated intervals")
-
         used = set()
 
         while True:
@@ -466,51 +549,92 @@ class Shrinker(object):
             used.add(c)
             c = bytes([c])
             parts = string.split(c)
-            self.debug("Removing %d intervals demarcated by %r" % (
-                len(parts), c,))
-            parts = self.adaptive_greedy_search_pass(
-                parts, lambda ls: criterion(c.join(ls)))
-            string = c.join(parts)
+            with self.in_phase("demarcated %r" % (c,)):
+                parts = self.adaptive_greedy_search_pass(
+                    parts, lambda ls: criterion(c.join(ls)))
+                string = c.join(parts)
         return string
 
     def expensive_shrink_string(self, string, criterion):
         if len(string) <= SHORT:
             return string
-        for k in range(SHORT, 1, -1):
-            self.explain("Deleting intervals of length %d" % (k,))
+        for k in range(2, SHORT):
             assert k > 1
+            with self.in_phase("intervals %d" % (k,)):
+                i = 0
+                while i + k <= len(string):
+                    attempt = string[:i] + string[i+k:]
+                    if criterion(attempt):
+                        string = attempt
+                    else:
+                        i += 1
+
+        with self.in_phase("pairs"):
             i = 0
-            while i + k <= len(string):
-                attempt = string[:i] + string[i+k:]
-                if criterion(attempt):
-                    string = attempt
+            while i < len(string):
+                for j in range(i + 2, min(i + SHORT, len(string))):
+                    attempt = string[:i] + string[i + 1:j] + string[j+1:]
+                    if criterion(attempt):
+                        string = attempt
+                        break
                 else:
                     i += 1
-        self.explain("Deleting pairs")
+        return string
+
+    @phase("tokenwise")
+    def token_min_string(self, string, criterion):
+        tokens = self.tokenize(string)
+        self.debug("%d tokens, %d distinct" % (len(tokens), len(set(tokens))))
+        k = 1
+        while k < len(tokens):
+            with self.in_phase("intervals %d" % (k,)):
+                i = 0
+                while i + k <= len(string):
+                    shrunk = tokens[:i] + tokens[i+k:]
+                    if criterion(b''.join(shrunk)):
+                        tokens = shrunk
+                    i += 1
+            k += 1
+        return b''.join(tokens)
+
+    def tokenize(self, string):
+        tokens = []
         i = 0
         while i < len(string):
-            for j in range(i + 2, min(i + SHORT, len(string))):
-                attempt = string[:i] + string[i + 1:j] + string[j+1:]
-                if criterion(attempt):
-                    string = attempt
-                    break
-            else:
-                i += 1
-        return string
+            lo = 1
+            hi = 2
+
+            def check(k):
+                if i + k >= len(string):
+                    return False
+                t = string[i:i+k]
+                return t in string[i+k:] or t in string[:i]
+            while check(hi):
+                hi *= 2
+            while lo + 1 < hi:
+                mid = (lo + hi) // 2
+                if check(mid):
+                    lo = mid
+                else:
+                    hi = mid
+            tokens.append(string[i:i+lo])
+            i += lo
+        assert b''.join(tokens) == string
+        return tokens
 
     def shrink_string(self, string, criterion):
         assert criterion(string)
         if len(string) <= 1:
             return string
 
-        if len(set(string)) == 1:
-            for i in range(len(string)):
-                attempt = string[:i]
-                if criterion(attempt):
-                    return attempt
-            return string
+        state = ShrinkState(
+            string=string, criterion=criterion, sort_key=self.sort_key,
+            random=self.random, in_phase=self.in_phase
+        )
+        state.run()
+        return state.string
 
-        if len(string) <= 10:
+        if 6 < len(string) <= 10:
             string = self.byte_shrink_string(string, criterion)
         if len(string) <= 6:
             return self.expmin_string(string, criterion)
@@ -519,18 +643,18 @@ class Shrinker(object):
         prev = None
         while prev != string:
             prev = string
-            string = self.alphabet_minimize(string, criterion)
-            string = self.structure_shrink_string(string, criterion)
-            string = self.demarcated_shrink(string, criterion)
-            string = self.lexicographically_minimize_string(string, criterion)
-            if prev != string:
-                continue
+            string = self.structure_shrink_string_2(string, criterion)
             string = self.byte_shrink_string(string, criterion)
+            string = self.token_min_string(string, criterion)
+            string = self.kill_ngrams(string, criterion)
             string = self.expensive_shrink_string(string, criterion)
+            string = self.alphabet_removal(string, criterion)
+            string = self.alphabet_minimize(string, criterion)
+            string = self.lexicographically_minimize_string(string, criterion)
         return string
 
-    @phase
-    def alphabet_minimize(self, string, criterion):
+    @phase("alphabet removal")
+    def alphabet_removal(self, string, criterion):
         alphabet = sorted(set(string), key=self.__byte_sort_key)
 
         def replace(a, b):
@@ -538,62 +662,84 @@ class Shrinker(object):
             return bytes([b if s == a else s for s in string])
 
         for i, c in enumerate(alphabet):
-            self.explain("Removing %r" % (bytes([c]),))
             attempt = bytes([s for s in string if s != c])
             if criterion(attempt):
                 string = attempt
+
+        return string
+
+    @phase("alphabet minimization")
+    def alphabet_minimize(self, string, criterion):
+        def replace(a, b):
+            assert a in string
+            return bytes([b if s == a else s for s in string])
 
         alphabet = sorted(set(string), key=self.__byte_sort_key)
 
         for i, c in enumerate(alphabet):
             if i > 0 and c in string:
                 attempt = replace(c, alphabet[0])
-                self.explain("Replacing %r" % (bytes([c]),))
-                if criterion(attempt):
-                    string = attempt
-                    continue
-                if criterion(replace(c, alphabet[i - 1])):
-                    hi = i - 1
-                    lo = 0
-                    while lo + 1 < hi:
-                        mid = (lo + hi) // 2
-                        if criterion(replace(c, alphabet[mid])):
-                            hi = mid
-                        else:
-                            lo = mid
-                    d = alphabet[hi]
-                    string = replace(c, d)
-                    assert c not in string
-                    assert criterion(string)
-                    self.debug(
-                        "Replaced %r with %r" % (bytes([c]), bytes([d])))
+                with self.in_phase("lowering %r" % (bytes([c]),)):
+                    if criterion(attempt):
+                        string = attempt
+                        continue
+                    if criterion(replace(c, alphabet[i - 1])):
+                        hi = i - 1
+                        lo = 0
+                        while lo + 1 < hi:
+                            mid = (lo + hi) // 2
+                            if criterion(replace(c, alphabet[mid])):
+                                hi = mid
+                            else:
+                                lo = mid
+                        d = alphabet[hi]
+                        string = replace(c, d)
+                        assert c not in string
+                        assert criterion(string)
         return string
 
-    @phase
     def lexicographically_minimize_string(self, string, criterion):
         n = len(string)
 
-        def lower(u, v):
-            c = bytes([min(string[u:v], key=self.__byte_sort_key)])
-            r = string[:u] + c * (v - u) + string[v:]
+        alphabet = sorted(set(string), key=self.__byte_sort_key)
+
+        def lower(u, v, c):
+            r = string[:u] + bytes(
+                [min(c, b) for b in string[u:v]]) + string[v:]
             assert len(r) == len(string)
             return r
-        i = 0
-        while i < n:
-            if criterion(lower(i, i + 1)):
-                lo = 1
-                hi = 2
-                while i + hi <= n and criterion(lower(i, i + hi)):
-                    hi *= 2
-                if i + hi <= n:
-                    while lo + 1 < hi:
-                        mid = (lo + hi) // 2
-                        if criterion(lower(i, i + mid)):
-                            lo = mid
-                        else:
-                            hi = mid
-                string = lower(i, i + lo)
-            i += 1
+        j = 0
+        while j < len(alphabet):
+            c = alphabet[j]
+            j += 1
+
+            with self.in_phase(
+                "lexicographic %r" % (bytes([c]),)
+            ):
+                i = 0
+                while i < n:
+                    if (
+                        self.__byte_sort_key(c) < self.__byte_sort_key(
+                            string[i])
+                        and criterion(lower(i, i + 1, c))
+                    ):
+                        lo = 1
+                        hi = 2
+                        while i + hi <= n and criterion(lower(i, i + hi, c)):
+                            hi *= 2
+                        if i + hi <= n:
+                            while lo + 1 < hi:
+                                mid = (lo + hi) // 2
+                                if criterion(lower(i, i + mid, c)):
+                                    lo = mid
+                                else:
+                                    hi = mid
+                        string = lower(i, i + lo, c)
+                        break
+                    i += 1
+
+            alphabet = sorted(set(string), key=self.__byte_sort_key)
+
         return string
 
     def shrink(self):
@@ -619,10 +765,255 @@ class Shrinker(object):
                         label, len(current), len(set(current))))
 
                 def criterion(s):
-                    assert self.sort_key(s) <= self.sort_key(self.best[label])
                     return self.classify(s) == label
 
                 self.shrink_string(self.best[label], criterion)
+
+    def run_with_timeout(self, shrinker, test_case, predicate, timeout):
+        best = test_case
+        here = object()
+        start = time.time()
+
+        def wrapped(target):
+            nonlocal best
+            if time.time() >= start + timeout:
+                raise Stop("STOP", here)
+            else:
+                result = predicate(target)
+                if result and self.sort_key(target) < self.sort_key(best):
+                    best = target
+                return result
+
+        try:
+            shrinker(test_case, wrapped)
+            return best, False
+        except Stop as stop:
+            if stop.args[1] is not here:
+                raise
+            return best, True
+
+
+class ShrinkState(object):
+    def __init__(self, string, criterion, sort_key, random, in_phase):
+        self.string = string
+        self.__in_phase = in_phase
+        self.__random = random
+        self.__criterion = criterion
+        self.__sort_key = sort_key
+        self.__shrink_index = 0
+        self.__shrinks = [
+            self.opportunistic,
+            self.adaptive, self.aggressive,
+            self.exhaustive(4), self.exhaustive(5), self.exhaustive(6),
+            self.exhaustive(7),
+        ]
+
+    def once(self, test_case, predicate):
+        i = self.__random.randint(0, len(test_case) - 1)
+        attempt = list(test_case)
+        del attempt[i]
+        if predicate(attempt):
+            return attempt
+        else:
+            return test_case
+
+    def opportunistic(self, test_case, predicate):
+        for _ in range(5):
+            shrunk = self.once(test_case, predicate)
+            if shrunk == test_case:
+                break
+            test_case = shrunk
+        return test_case
+
+    def adaptive(self, test_case, predicate):
+        i = 0
+        while i < len(test_case):
+            def check(k):
+                if i + k > len(test_case):
+                    return False
+                return predicate(test_case[:i] + test_case[i + k:])
+            if check(1):
+                lo = 1
+                hi = 2
+                while i + hi <= len(test_case) and check(hi):
+                    hi *= 2
+                if check(hi):
+                    test_case = test_case[:i]
+                else:
+                    while lo + 1 < hi:
+                        mid = (lo + hi) // 2
+                        if check(mid):
+                            lo = mid
+                        else:
+                            hi = mid
+                    test_case = test_case[:i] + test_case[i + lo:]
+                assert predicate(test_case)
+            i += 1
+        return test_case
+
+    def aggressive(self, test_case, predicate):
+        test_case = self.adaptive(test_case, predicate)
+        k = 1
+        while k < len(test_case):
+            with self.__in_phase("%d-intervals" % (k,)):
+                i = 0
+                while i + k <= len(test_case):
+                    attempt = list(test_case)
+                    del attempt[i:i+k]
+                    assert len(attempt) < len(test_case)
+                    if predicate(attempt):
+                        test_case = attempt
+                    else:
+                        i += 1
+            k += 1
+        return test_case
+
+    def exhaustive(self, k):
+        def accept(test_case, predicate):
+            if len(test_case) > k:
+                test_case = self.aggressive(test_case, predicate)
+            if len(test_case) <= k:
+                def sort_key(b):
+                    return self.__sort_key(b''.join(b))
+
+                subsets = []
+                for s in range(1, 2 ** len(test_case) - 1):
+                    bits = []
+                    for x in test_case:
+                        if s & 1:
+                            bits.append(x)
+                        s >>= 1
+                        if not s:
+                            break
+                    subsets.append(bits)
+                subsets.sort(key=lambda b: (len(b), sort_key(b)))
+                for bits in subsets:
+                    if predicate(bits):
+                        return bits
+                return test_case
+            return test_case
+        accept.__name__ = 'exhaustive(%d)' % (k,)
+        return accept
+
+    def criterion(self, target):
+        if self.__criterion(target):
+            if self.__sort_key(target) < self.__sort_key(self.string):
+                self.string = target
+            return True
+        return False
+
+    def partitions(self):
+        used_ngrams = set()
+
+        while True:
+            indices = list(range(len(self.string)))
+            self.__random.shuffle(indices)
+            original = self.string
+            for i in indices:
+                if self.string != original:
+                    if i >= len(self.string):
+                        break
+                    if self.string[:i + 1] != original[:i + 1]:
+                        break
+
+                def count(k):
+                    return self.string.count(self.string[i:i+k])
+
+                if count(1) <= 1:
+                    continue
+                lo = 1
+                hi = 1
+                while count(hi) > 1 and hi < len(self.string) - 1:
+                    hi *= 2
+                while lo + 1 < hi:
+                    mid = (lo + hi) // 2
+                    if count(mid) > 1:
+                        lo = mid
+                    else:
+                        hi = mid
+
+                canon = {}
+                for k in range(1, hi):
+                    t = self.string[i:i+k]
+                    canon.setdefault(self.string.count(t), t)
+                ngs = sorted(canon.values(), key=len, reverse=True)
+
+                for ng in ngs:
+                    if len(ng) > 1 and ng not in used_ngrams:
+                        used_ngrams.add(ng)
+                        partition = self.string.split(ng)
+                        if len(partition) <= 2:
+                            continue
+                        for i in range(len(partition) - 1):
+                            partition[i] += ng
+
+                        with self.__in_phase("partition %r" % (ng,)):
+                            yield partition
+            else:
+                break
+
+        alphabet = set(self.string)
+        while alphabet:
+            c = min(alphabet, key=self.string.count)
+            alphabet.discard(c)
+            if self.string.count(c) <= 1:
+                continue
+            c = bytes([c])
+            partition = self.string.split(c)
+            for i in range(len(partition) - 1):
+                partition[i] += c
+            with self.__in_phase("partition %r" % (c,)):
+                yield partition
+
+        tokens = []
+        i = 0
+        while i < len(self.string):
+            lo = 1
+            hi = 2
+
+            def check(k):
+                if i + k >= len(self.string):
+                    return False
+                t = self.string[i:i+k]
+                return t in self.string[i+k:] or t in self.string[:i]
+            while check(hi):
+                hi *= 2
+            while lo + 1 < hi:
+                mid = (lo + hi) // 2
+                if check(mid):
+                    lo = mid
+                else:
+                    hi = mid
+            tokens.append(self.string[i:i+lo])
+            i += lo
+        with self.__in_phase("tokenwise"):
+            yield tokens
+        with self.__in_phase("bytewise"):
+            yield [bytes([c]) for c in self.string]
+
+    def partition_criterion(self, ls):
+        return self.criterion(b''.join(ls))
+
+    def run(self):
+        passnum = 0
+        while self.__shrink_index < len(self.__shrinks):
+            prev = self.string
+            passnum += 1
+            shrinker = self.__shrinks[self.__shrink_index]
+            with self.__in_phase(
+                "%s [pass %s]" % (shrinker.__name__, passnum)
+            ):
+                for p in self.partitions():
+                    assert b''.join(p) == self.string
+                    assert self.partition_criterion(p)
+                    shrinker(p, self.partition_criterion)
+            if self.string == prev:
+                self.__shrink_index += 1
+                passnum = 0
+
+
+class Stop(Exception):
+    pass
 
 
 def shrink(*args, **kwargs):
@@ -630,8 +1021,11 @@ def shrink(*args, **kwargs):
     shrinker = Shrinker(*args, **kwargs)
     shrinker.shrink()
     return shrinker.best
-        
+
 
 def shortlex(b):
     return (len(b), b)
 
+
+class Control(Exception):
+    pass
