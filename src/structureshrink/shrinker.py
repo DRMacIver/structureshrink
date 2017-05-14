@@ -1,10 +1,11 @@
 import hashlib
-from collections import OrderedDict, Counter
+from collections import OrderedDict, Counter, defaultdict
 from enum import IntEnum
 from random import Random
 import sys
 from contextlib import contextmanager
 import time
+import math
 
 
 class Volume(IntEnum):
@@ -125,15 +126,18 @@ class Shrinker(object):
         return (len(s), [self.__byte_sort_key(b) for b in s])
 
     def classify(self, string):
+        if self.__volume >= Volume.debug:
+            if self.__status_length == 0 and self.phase_name is not None:
+                self.__write_status('(%s) ' % (self.phase_name,))
         key = cache_key(string)
+        if key in self.__cache:
+            self.__write_status("*")
         try:
             return self.__cache[key]
         except KeyError:
             pass
 
         if self.__volume >= Volume.debug:
-            if self.__status_length == 0 and self.phase_name is not None:
-                self.__write_status('(%s) ' % (self.phase_name,))
             self.__write_status(".")
 
         keys = [key]
@@ -795,6 +799,7 @@ class Shrinker(object):
 
 class ShrinkState(object):
     def __init__(self, string, criterion, sort_key, random, in_phase):
+        self.__index = {}
         self.string = string
         self.__in_phase = in_phase
         self.__random = random
@@ -803,10 +808,65 @@ class ShrinkState(object):
         self.__shrink_index = 0
         self.__shrinks = [
             self.opportunistic,
-            self.adaptive, self.aggressive,
+            self.adaptive,
+            self.aggressive,
             self.exhaustive(4), self.exhaustive(5), self.exhaustive(6),
             self.exhaustive(7),
         ]
+        self.timeout = 10
+
+    def count(self, t):
+        return len(self.indices(t))
+
+    def indices(self, t):
+        if isinstance(t, int):
+            t = bytes([t])
+
+        try:
+            return self.__index[t]
+        except KeyError:
+            pass
+
+        if not self.__index:
+            index = defaultdict(list)
+            for i, c in enumerate(self.string):
+                index[c].append(i)
+            for c, vs in index.items():
+                self.__index[bytes([c])] = tuple(vs)
+        if len(t) <= 1:
+            try:
+                return self.__index[t]
+            except KeyError:
+                return ()
+        k = find_large_n(
+            len(t) - 1,
+            lambda k: t[:k] in self.__index or t[-k:] in self.__index)
+        assert k > 0, t
+        n = len(t)
+        if t[:k] in self.__index:
+            result = tuple(
+                j for j in self.__index[t[:k]]
+                if j + n <= len(self.string)
+                and self.string[j:j+n] == t
+            )
+        else:
+            tail = t[-k:]
+            assert len(tail) == k
+            result = []
+            for j in self.__index[tail]:
+                assert self.string[j:j+k] == tail, (tail, self.string[j:j+k])
+                if j >= k:
+                    i = j + k - n
+                    if self.string[i:i+n] == t:
+                        result.append(i)
+            result = tuple(result)
+        assert len(result) >= self.string.count(t), (
+            t, len(result), self.string.count(t))
+        for i in result:
+            assert i + len(t) <= len(self.string)
+            assert self.string[i:i+len(t)] == t, (t, self.string[i:i+len(t)])
+        self.__index[t] = result
+        return result
 
     def once(self, test_case, predicate):
         i = self.__random.randint(0, len(test_case) - 1)
@@ -818,37 +878,53 @@ class ShrinkState(object):
             return test_case
 
     def opportunistic(self, test_case, predicate):
-        for _ in range(5):
-            shrunk = self.once(test_case, predicate)
-            if shrunk == test_case:
-                break
-            test_case = shrunk
+        prev = None
+        while prev != test_case:
+            prev = test_case
+            if len(test_case) <= 1:
+                return test_case
+            elif len(test_case) <= 2:
+                for p in test_case:
+                    q = [p]
+                    if predicate(q):
+                        return q
+                return test_case
+            i = self.__random.randint(1, len(test_case) - 2)
+            test_case = self.__adaptive_pass(i, test_case, predicate)
         return test_case
 
+    def __adaptive_interval(self, i, test_case, predicate):
+        def deletable(u, v):
+            if v > len(test_case):
+                return False
+            if u < 0:
+                return False
+            attempt = list(test_case)
+            del attempt[u:v]
+            return predicate(attempt)
+
+        k = find_large_n(
+            len(test_case) - i, lambda j: deletable(i, i + j))
+        if k == 0:
+            return i, i
+        upper_bound = i + k
+        k = find_large_n(
+            i, lambda j: deletable(i - j, upper_bound))
+        lower_bound = i - k
+        return lower_bound, upper_bound
+
+    def __adaptive_pass(self, i, test_case, predicate):
+        u, v = self.__adaptive_interval(i, test_case, predicate)
+        attempt = list(test_case)
+        del attempt[u:v]
+        assert predicate(attempt)
+        return attempt
+
     def adaptive(self, test_case, predicate):
-        i = 0
-        while i < len(test_case):
-            def check(k):
-                if i + k > len(test_case):
-                    return False
-                return predicate(test_case[:i] + test_case[i + k:])
-            if check(1):
-                lo = 1
-                hi = 2
-                while i + hi <= len(test_case) and check(hi):
-                    hi *= 2
-                if check(hi):
-                    test_case = test_case[:i]
-                else:
-                    while lo + 1 < hi:
-                        mid = (lo + hi) // 2
-                        if check(mid):
-                            lo = mid
-                        else:
-                            hi = mid
-                    test_case = test_case[:i] + test_case[i + lo:]
-                assert predicate(test_case)
-            i += 1
+        indices = list(range(len(test_case)))
+        self.__random.shuffle(indices)
+        for i in indices:
+            test_case = self.__adaptive_pass(i, test_case, predicate)
         return test_case
 
     def aggressive(self, test_case, predicate):
@@ -899,64 +975,88 @@ class ShrinkState(object):
         if self.__criterion(target):
             if self.__sort_key(target) < self.__sort_key(self.string):
                 self.string = target
+                self.__index = {}
             return True
         return False
 
     def partitions(self):
         used_ngrams = set()
 
-        while True:
+        retry = True
+        while retry:
+            retry = False
             indices = list(range(len(self.string)))
             self.__random.shuffle(indices)
-            original = self.string
             for i in indices:
-                if self.string != original:
-                    if i >= len(self.string):
-                        break
-                    if self.string[:i + 1] != original[:i + 1]:
-                        break
-
-                def count(k):
-                    return self.string.count(self.string[i:i+k])
-
-                if count(1) <= 1:
+                if i >= len(self.string):
                     continue
-                lo = 1
-                hi = 1
-                while count(hi) > 1 and hi < len(self.string) - 1:
-                    hi *= 2
-                while lo + 1 < hi:
-                    mid = (lo + hi) // 2
-                    if count(mid) > 1:
-                        lo = mid
-                    else:
-                        hi = mid
 
-                canon = {}
-                for k in range(1, hi):
-                    t = self.string[i:i+k]
-                    canon.setdefault(self.string.count(t), t)
-                ngs = sorted(canon.values(), key=len, reverse=True)
+                string = self.string
 
-                for ng in ngs:
-                    if len(ng) > 1 and ng not in used_ngrams:
-                        used_ngrams.add(ng)
-                        partition = self.string.split(ng)
-                        if len(partition) <= 2:
-                            continue
-                        for i in range(len(partition) - 1):
-                            partition[i] += ng
+                extend_cache = {}
 
-                        with self.__in_phase("partition %r" % (ng,)):
-                            yield partition
-            else:
+                def left_extend(t):
+                    if i == 0:
+                        return t
+
+                    try:
+                        return extend_cache[t]
+                    except KeyError:
+                        pass
+                    assert string[i:i+len(t)] == t
+                    n = self.count(t)
+                    assert n > 1
+                    k = find_large_n(
+                        i, lambda k: self.count(string[i-k:i] + t) == n)
+                    result = string[i-k:i] + t
+                    extend_cache[t] = result
+                    return result
+
+                def is_good_ngram(k):
+                    t = string[i:i+k]
+                    if self.count(t) <= 1:
+                        return False
+                    t = left_extend(t)
+                    return t not in used_ngrams
+
+                k = find_large_n(len(string) - i, is_good_ngram)
+                if k == 0:
+                    continue
+                ng = left_extend(string[i:i+k])
+
+                c = self.count(ng)
+                equiv = find_large_n(
+                    len(ng), lambda k: self.count(ng[:-k]) == c)
+
+                for k in range(len(ng), equiv - 1, -1):
+                    t = ng[:k]
+                    used_ngrams.add(t)
+
+                if len(ng) <= 1:
+                    continue
+                partition = self.string.split(ng)
+                assert len(partition) > 2
+                for i in range(len(partition) - 1):
+                    partition[i] += ng
+
+                if len(ng) >= 40:
+                    ps = "%s=%s..%d..%s" % (
+                        hashlib.sha1(ng).hexdigest()[:8],
+                        repr(ng[:8])[1:], len(ng) - 16, repr(ng[-8:])[1:],
+                    )
+                else:
+                    ps = repr(ng)[1:]
+
+                with self.__in_phase("partition %s" % (ps,)):
+                    yield partition
+                retry = True
                 break
 
         alphabet = set(self.string)
         while alphabet:
-            c = min(alphabet, key=self.string.count)
+            c = min(alphabet, key=self.count)
             alphabet.discard(c)
-            if self.string.count(c) <= 1:
+            if self.count(c) <= 1:
                 continue
             c = bytes([c])
             partition = self.string.split(c)
@@ -965,7 +1065,25 @@ class ShrinkState(object):
             with self.__in_phase("partition %r" % (c,)):
                 yield partition
 
+        with self.__in_phase("tokenwise"):
+            yield self.tokenize()
+        with self.__in_phase("bytewise"):
+            yield [bytes([c]) for c in self.string]
+
+    def tokenize(self):
         tokens = []
+
+        cache = {}
+
+        def is_token(t):
+            try:
+                return cache[t]
+            except KeyError:
+                pass
+            result = self.count(t) > 1
+            cache[t] = result
+            return result
+        seen = set()
         i = 0
         while i < len(self.string):
             lo = 1
@@ -974,8 +1092,7 @@ class ShrinkState(object):
             def check(k):
                 if i + k >= len(self.string):
                     return False
-                t = self.string[i:i+k]
-                return t in self.string[i+k:] or t in self.string[:i]
+                return is_token(self.string[i:i+k])
             while check(hi):
                 hi *= 2
             while lo + 1 < hi:
@@ -984,12 +1101,11 @@ class ShrinkState(object):
                     lo = mid
                 else:
                     hi = mid
-            tokens.append(self.string[i:i+lo])
+            t = self.string[i:i+lo]
+            tokens.append(t)
+            seen.add(t)
             i += lo
-        with self.__in_phase("tokenwise"):
-            yield tokens
-        with self.__in_phase("bytewise"):
-            yield [bytes([c]) for c in self.string]
+        return tokens
 
     def partition_criterion(self, ls):
         return self.criterion(b''.join(ls))
@@ -1000,10 +1116,11 @@ class ShrinkState(object):
             prev = self.string
             passnum += 1
             shrinker = self.__shrinks[self.__shrink_index]
-            with self.__in_phase(
-                "%s [pass %s]" % (shrinker.__name__, passnum)
-            ):
-                for p in self.partitions():
+            for p in self.partitions():
+                with self.__in_phase(
+                    "%s [pass %s, %d parts]" % (
+                        shrinker.__name__, passnum, len(p))
+                ):
                     assert b''.join(p) == self.string
                     assert self.partition_criterion(p)
                     shrinker(p, self.partition_criterion)
@@ -1029,3 +1146,43 @@ def shortlex(b):
 
 class Control(Exception):
     pass
+
+
+PROBE_UP_TO = 4
+
+
+def find_large_n(max_n, f):
+    """Finds a reasonably large value in [0, max_n] such that f(x) is True.
+    f(0) is assumed to be true, and this only guarantees finding the maximum
+    if f is monotonic increasing.
+    """
+    if max_n == 0:
+        return max_n
+    if not f(1):
+        return 0
+    lo = 1
+    hi = 2
+
+    # Perform an exponential probe upwards to find a value where it becomes
+    # false. We expect this to happen very quickly, so we probe at a slightly
+    # relaxed rate. This means the first few values we try are 1, 2, 3, 5, 8.
+    while hi <= max_n and f(hi):
+        lo = hi
+        hi = math.ceil(1.5 * hi)
+
+    if hi > max_n:
+        if f(max_n):
+            return max_n
+        else:
+            hi = max_n
+
+    # We now know that f(lo) and not f(hi). We retain this invariant through
+    # the loop.
+
+    while lo + 1 < hi:
+        mid = (lo + hi) // 2
+        if f(mid):
+            lo = mid
+        else:
+            hi = mid
+    return lo
