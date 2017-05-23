@@ -792,7 +792,7 @@ class ShrinkState(object):
         self.__random = random
         self.__criterion = criterion
         self.__sort_key = sort_key
-        self.__shrink_index = 2
+        self.__shrink_index = 0
         self.__shrinks = [
             self.opportunistic,
             self.adaptive,
@@ -1166,7 +1166,7 @@ class ShrinkState(object):
                     assert b''.join(p) == self.string
                     assert self.partition_criterion(p)
 
-            if len(self.string) == len(prev):
+            if len(self.string) == len(prev) or self.__shrink_index == 0:
                 self.__shrink_index += 1
                 passnum = 0
 
