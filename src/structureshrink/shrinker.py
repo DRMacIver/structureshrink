@@ -5,7 +5,7 @@ from random import Random
 import sys
 from contextlib import contextmanager
 import time
-import math
+from functools import cmp_to_key
 
 
 class Volume(IntEnum):
@@ -130,8 +130,6 @@ class Shrinker(object):
             if self.__status_length == 0 and self.phase_name is not None:
                 self.__write_status('(%s) ' % (self.phase_name,))
         key = cache_key(string)
-        if key in self.__cache:
-            self.__write_status("*")
         try:
             return self.__cache[key]
         except KeyError:
@@ -626,17 +624,49 @@ class Shrinker(object):
         assert b''.join(tokens) == string
         return tokens
 
+    def lexicographically_minimize_string(self, string, criterion):
+        alphabet = sorted(set(string), key=self.__byte_sort_key)
+
+        i = 0
+        while i < len(string):
+            for a in alphabet:
+                if self.__byte_sort_key(string[i]) >= self.__byte_sort_key(a):
+                    break
+
+                def lower(k):
+                    return (
+                        string[:i] +
+                        bytes([
+                            min(c, a, key=self.__byte_sort_key)
+                            for c in string[i:i+k]]) +
+                        string[i+k:])
+                k = find_large_n(
+                    len(string) - i, lambda k: criterion(lower(k)))
+                if k > 0:
+                    string = lower(k)
+                    break
+            i += 1
+
+        return string
+
     def shrink_string(self, string, criterion):
         assert criterion(string)
         if len(string) <= 1:
             return string
 
-        state = ShrinkState(
-            string=string, criterion=criterion, sort_key=self.sort_key,
-            random=self.random, in_phase=self.in_phase
-        )
-        state.run()
-        return state.string
+        prev = None
+        while prev != string:
+            prev = string
+
+            state = ShrinkState(
+                string=string, criterion=criterion, sort_key=self.sort_key,
+                random=self.random, in_phase=self.in_phase
+            )
+            state.run()
+            string = state.string
+            string = self.lexicographically_minimize_string(
+                string, criterion)
+        return string
 
         if 6 < len(string) <= 10:
             string = self.byte_shrink_string(string, criterion)
@@ -702,50 +732,6 @@ class Shrinker(object):
                         assert criterion(string)
         return string
 
-    def lexicographically_minimize_string(self, string, criterion):
-        n = len(string)
-
-        alphabet = sorted(set(string), key=self.__byte_sort_key)
-
-        def lower(u, v, c):
-            r = string[:u] + bytes(
-                [min(c, b) for b in string[u:v]]) + string[v:]
-            assert len(r) == len(string)
-            return r
-        j = 0
-        while j < len(alphabet):
-            c = alphabet[j]
-            j += 1
-
-            with self.in_phase(
-                "lexicographic %r" % (bytes([c]),)
-            ):
-                i = 0
-                while i < n:
-                    if (
-                        self.__byte_sort_key(c) < self.__byte_sort_key(
-                            string[i])
-                        and criterion(lower(i, i + 1, c))
-                    ):
-                        lo = 1
-                        hi = 2
-                        while i + hi <= n and criterion(lower(i, i + hi, c)):
-                            hi *= 2
-                        if i + hi <= n:
-                            while lo + 1 < hi:
-                                mid = (lo + hi) // 2
-                                if criterion(lower(i, i + mid, c)):
-                                    lo = mid
-                                else:
-                                    hi = mid
-                        string = lower(i, i + lo, c)
-                        break
-                    i += 1
-
-            alphabet = sorted(set(string), key=self.__byte_sort_key)
-
-        return string
-
     def shrink(self):
         prev = -1
         while prev != self.shrinks:
@@ -769,6 +755,7 @@ class Shrinker(object):
                         label, len(current), len(set(current))))
 
                 def criterion(s):
+                    assert self.sort_key(s) <= self.sort_key(self.best[label])
                     return self.classify(s) == label
 
                 self.shrink_string(self.best[label], criterion)
@@ -799,13 +786,13 @@ class Shrinker(object):
 
 class ShrinkState(object):
     def __init__(self, string, criterion, sort_key, random, in_phase):
-        self.__index = {}
+        self.__index = IndexTree(string)
         self.string = string
         self.__in_phase = in_phase
         self.__random = random
         self.__criterion = criterion
         self.__sort_key = sort_key
-        self.__shrink_index = 0
+        self.__shrink_index = 2
         self.__shrinks = [
             self.opportunistic,
             self.adaptive,
@@ -816,57 +803,49 @@ class ShrinkState(object):
         self.timeout = 10
 
     def count(self, t):
-        return len(self.indices(t))
+        return self.__index.count(t)
 
-    def indices(self, t):
-        if isinstance(t, int):
-            t = bytes([t])
+    def criterion(self, target):
+        if self.__criterion(target):
+            if self.__sort_key(target) < self.__sort_key(self.string):
+                self.string = target
+                self.__index = IndexTree(self.string)
+            return True
+        return False
 
-        try:
-            return self.__index[t]
-        except KeyError:
-            pass
-
-        if not self.__index:
-            index = defaultdict(list)
-            for i, c in enumerate(self.string):
-                index[c].append(i)
-            for c, vs in index.items():
-                self.__index[bytes([c])] = tuple(vs)
-        if len(t) <= 1:
-            try:
-                return self.__index[t]
-            except KeyError:
-                return ()
-        k = find_large_n(
-            len(t) - 1,
-            lambda k: t[:k] in self.__index or t[-k:] in self.__index)
-        assert k > 0, t
-        n = len(t)
-        if t[:k] in self.__index:
-            result = tuple(
-                j for j in self.__index[t[:k]]
-                if j + n <= len(self.string)
-                and self.string[j:j+n] == t
-            )
-        else:
-            tail = t[-k:]
-            assert len(tail) == k
-            result = []
-            for j in self.__index[tail]:
-                assert self.string[j:j+k] == tail, (tail, self.string[j:j+k])
-                if j >= k:
-                    i = j + k - n
-                    if self.string[i:i+n] == t:
-                        result.append(i)
-            result = tuple(result)
-        assert len(result) >= self.string.count(t), (
-            t, len(result), self.string.count(t))
-        for i in result:
-            assert i + len(t) <= len(self.string)
-            assert self.string[i:i+len(t)] == t, (t, self.string[i:i+len(t)])
-        self.__index[t] = result
+    def calc_alphabet(self):
+        result = sorted(set(self.string))
+        result.sort(key=self.count, reverse=True)
+        result.sort(key=self.__byte_sort_key)
         return result
+
+    def lexicographically_minimize_string(self):
+        alphabet = self.calc_alphabet()
+
+        for c in alphabet:
+            if c not in self.string:
+                continue
+
+            with self.__in_phase("lower to %r" % (bytes([c]),)):
+                string = self.string
+                indices = [
+                    i for i, d in enumerate(string)
+                    if self.__byte_sort_key(d) > self.__byte_sort_key(c)
+                ]
+
+                def lower_criterion(ls):
+                    seen = set(ls)
+                    replaced = bytes([
+                        d if i in seen else min(c, d, key=self.__byte_sort_key)
+                        for i, d in enumerate(string)
+                    ])
+                    return self.criterion(replaced)
+
+                shrinker = self.__shrinks[self.__shrink_index]
+                shrinker(indices, lower_criterion)
+
+    def __byte_sort_key(self, c):
+        return self.__sort_key(bytes([c]))
 
     def once(self, test_case, predicate):
         i = self.__random.randint(0, len(test_case) - 1)
@@ -903,8 +882,11 @@ class ShrinkState(object):
             del attempt[u:v]
             return predicate(attempt)
 
-        k = find_large_n(
-            len(test_case) - i, lambda j: deletable(i, i + j))
+        def check_k(k):
+            result = deletable(i, i + k)
+            return result
+
+        k = find_large_n(len(test_case) - i, check_k)
         if k == 0:
             return i, i
         upper_bound = i + k
@@ -921,15 +903,19 @@ class ShrinkState(object):
         return attempt
 
     def adaptive(self, test_case, predicate):
-        indices = list(range(len(test_case)))
-        self.__random.shuffle(indices)
-        for i in indices:
-            test_case = self.__adaptive_pass(i, test_case, predicate)
+        i = 0
+        while i < len(test_case):
+            k = find_large_n(
+                len(test_case) - i,
+                lambda k: predicate(test_case[:i] + test_case[i + k:]))
+            if k > 0:
+                test_case = test_case[:i] + test_case[i + k:]
+            i += 1
         return test_case
 
     def aggressive(self, test_case, predicate):
         test_case = self.adaptive(test_case, predicate)
-        k = 1
+        k = 2
         while k < len(test_case):
             with self.__in_phase("%d-intervals" % (k,)):
                 i = 0
@@ -940,7 +926,14 @@ class ShrinkState(object):
                     if predicate(attempt):
                         test_case = attempt
                     else:
-                        i += 1
+                        attempt = list(test_case)
+                        del attempt[i+k-1]
+                        del attempt[i]
+                        assert len(attempt) < len(test_case)
+                        if predicate(attempt):
+                            test_case = attempt
+                        else:
+                            i += 1
             k += 1
         return test_case
 
@@ -950,7 +943,10 @@ class ShrinkState(object):
                 test_case = self.aggressive(test_case, predicate)
             if len(test_case) <= k:
                 def sort_key(b):
-                    return self.__sort_key(b''.join(b))
+                    try:
+                        return self.__sort_key(b''.join(b))
+                    except TypeError:
+                        return b
 
                 subsets = []
                 for s in range(1, 2 ** len(test_case) - 1):
@@ -971,15 +967,10 @@ class ShrinkState(object):
         accept.__name__ = 'exhaustive(%d)' % (k,)
         return accept
 
-    def criterion(self, target):
-        if self.__criterion(target):
-            if self.__sort_key(target) < self.__sort_key(self.string):
-                self.string = target
-                self.__index = {}
-            return True
-        return False
-
     def partitions(self):
+
+        with self.__in_phase("bytewise"):
+            yield [bytes([c]) for c in self.string]
         used_ngrams = set()
 
         retry = True
@@ -1065,11 +1056,6 @@ class ShrinkState(object):
             with self.__in_phase("partition %r" % (c,)):
                 yield partition
 
-        with self.__in_phase("tokenwise"):
-            yield self.tokenize()
-        with self.__in_phase("bytewise"):
-            yield [bytes([c]) for c in self.string]
-
     def tokenize(self):
         tokens = []
 
@@ -1110,21 +1096,77 @@ class ShrinkState(object):
     def partition_criterion(self, ls):
         return self.criterion(b''.join(ls))
 
+    def kill_duplicates(self):
+        tokens = self.tokenize()
+        counts = Counter(tokens)
+        targets = list(counts)
+        targets.sort(key=lambda t: len(t) * counts[t], reverse=True)
+        for t in targets:
+            attempt = [s for s in tokens if s != t]
+            if self.criterion(b''.join(attempt)):
+                tokens = attempt
+
+    def brute(self):
+        indices = list(range(len(self.string)))
+        self.__random.shuffle(indices)
+        orig = self.string
+        for i in indices:
+            if self.string != orig:
+                break
+            prev = None
+            while prev != self.string:
+                prev = self.string
+
+                def contains_at_least(k):
+                    s = self.string[i:i+k]
+                    inds = self.__index.indices(s)
+                    if not inds:
+                        return False
+                    return inds[-1] >= i + k
+
+                n = find_large_n(len(self.string) - i, contains_at_least)
+
+                canon = {}
+
+                for k in range(1, n):
+                    s = self.string[i:i+k]
+                    ix = [j for j in self.__index.indices(s) if j >= i + k]
+                    assert ix
+                    canon.setdefault(ix[0], ix)
+
+                for s in sorted(canon.values(), reverse=True):
+                    if self.criterion(self.string[:i] + self.string[s[0]:]):
+                        find_large_n(
+                            len(s) - 1,
+                            lambda k: self.criterion(
+                                self.string[:i] + self.string[s[k]:]))
+                        break
+                else:
+                    string = self.string
+                    find_large_n(
+                        len(self.string) - i,
+                        lambda n: self.criterion(string[:i] + string[i+n:])
+                    )
+            i += 1
+
     def run(self):
         passnum = 0
         while self.__shrink_index < len(self.__shrinks):
             prev = self.string
             passnum += 1
             shrinker = self.__shrinks[self.__shrink_index]
-            for p in self.partitions():
-                with self.__in_phase(
-                    "%s [pass %s, %d parts]" % (
-                        shrinker.__name__, passnum, len(p))
-                ):
+            with self.__in_phase(
+                "%s [pass %s]" % (shrinker.__name__, passnum)
+            ):
+                for p in self.partitions():
                     assert b''.join(p) == self.string
                     assert self.partition_criterion(p)
-                    shrinker(p, self.partition_criterion)
-            if self.string == prev:
+                    with self.__in_phase("partition to %d" % (len(p),)):
+                        p = shrinker(p, self.partition_criterion)
+                    assert b''.join(p) == self.string
+                    assert self.partition_criterion(p)
+
+            if len(self.string) == len(prev):
                 self.__shrink_index += 1
                 passnum = 0
 
@@ -1168,7 +1210,7 @@ def find_large_n(max_n, f):
     # relaxed rate. This means the first few values we try are 1, 2, 3, 5, 8.
     while hi <= max_n and f(hi):
         lo = hi
-        hi = math.ceil(1.5 * hi)
+        hi *= 2
 
     if hi > max_n:
         if f(max_n):
@@ -1186,3 +1228,51 @@ def find_large_n(max_n, f):
         else:
             hi = mid
     return lo
+
+
+class IndexTree(object):
+    def __init__(self, string):
+        self.string = string
+        self.__root = [range(len(self.string)), None]
+        self.__counts = {}
+
+    def indices(self, t):
+        if isinstance(t, int):
+            t = bytes([t])
+
+        target = self.__root
+
+        for k, c in enumerate(t):
+            if not target[0]:
+                return ()
+
+            if target[1] is None:
+                partition = defaultdict(list)
+                for i in target[0]:
+                    if i + k < len(self.string):
+                        partition[self.string[i + k]].append(i)
+                target[1] = {
+                    k: [tuple(v), None] for k, v in partition.items()
+                }
+            try:
+                target = target[1][c]
+            except KeyError:
+                return ()
+        return target[0]
+
+    def count(self, t):
+        if isinstance(t, int):
+            return len(self.indices(t))
+
+        try:
+            return self.__counts[t]
+        except KeyError:
+            pass
+        c = 0
+        last = None
+        for i in self.indices(t):
+            if last is None or i >= last + len(t):
+                c += 1
+                last = i
+        self.__counts[t] = c
+        return c
