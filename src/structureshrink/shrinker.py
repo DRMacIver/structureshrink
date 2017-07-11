@@ -823,12 +823,12 @@ class ShrinkState(object):
             ]
         else:
             self.__shrinks = [
-                self.aggressive,
                 self.random_adaptive,
                 self.opportunistic,
                 self.adaptive,
                 self.exhaustive(4), self.exhaustive(5), self.exhaustive(6),
                 self.exhaustive(7),
+                self.aggressive,
             ]
         self.timeout = 10
 
