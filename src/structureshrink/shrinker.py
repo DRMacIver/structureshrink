@@ -984,7 +984,7 @@ class ShrinkState(object):
 
 
     def aggressive(self, test_case, predicate):
-        test_case = self.random_adaptive(test_case, predicate)
+        test_case = self.adaptive(test_case, predicate)
         k = 2
         while k < len(test_case):
             prev = test_case
@@ -1052,7 +1052,7 @@ class ShrinkState(object):
     def partitions(self):
         used_ngrams = set()
 
-        retry = False 
+        retry = True 
         while retry:
             retry = False
             indices = list(range(len(self.string)))
@@ -1122,7 +1122,7 @@ class ShrinkState(object):
                 retry = True
                 break
 
-        alphabet = set(b" \n")
+        alphabet = set(self.string)
         while alphabet:
             c = min(alphabet, key=self.count)
             alphabet.discard(c)
