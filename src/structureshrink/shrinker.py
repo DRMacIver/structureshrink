@@ -6,6 +6,7 @@ import sys
 from contextlib import contextmanager
 import time
 from functools import cmp_to_key
+from bisect import bisect_left
 
 
 class Volume(IntEnum):
@@ -44,9 +45,10 @@ class Shrinker(object):
         initial, classify, *,
         preprocess=None, shrink_callback=None, printer=None,
         volume=Volume.quiet, principal_only=False,
-        passes=None, seed=None, preserve_lines=False
+        passes=None, seed=None, preserve_lines=False, slow=False
     ):
         self.phase_name = None
+        self.__slow = slow
         self.__indent = 0
         self.__status_length = 0
         self.__preserve_lines = preserve_lines
@@ -110,6 +112,9 @@ class Shrinker(object):
         self.__status_length = 0
 
     def __write_status(self, text):
+        if self.__volume >= Volume.debug:
+            if self.__status_length == 0 and self.phase_name is not None:
+                text = '(%s) ' % (self.phase_name,) + text
         sys.stdout.write(text)
         self.__status_length += len(text)
         sys.stdout.flush()
@@ -126,9 +131,6 @@ class Shrinker(object):
         return (len(s), [self.__byte_sort_key(b) for b in s])
 
     def classify(self, string):
-        if self.__volume >= Volume.debug:
-            if self.__status_length == 0 and self.phase_name is not None:
-                self.__write_status('(%s) ' % (self.phase_name,))
         key = cache_key(string)
         try:
             return self.__cache[key]
@@ -660,7 +662,7 @@ class Shrinker(object):
 
             state = ShrinkState(
                 string=string, criterion=criterion, sort_key=self.sort_key,
-                random=self.random, in_phase=self.in_phase
+                random=self.random, in_phase=self.in_phase, slow=self.__slow
             )
             state.run()
             string = state.string
@@ -748,17 +750,38 @@ class Shrinker(object):
                     continue
                 if self.principal_only and self.__initial_label != label:
                     continue
-                if self.classify(b'') == label:
+                if not self.__slow and self.classify(b'') == label:
                     continue
                 self.output(
                     'Shrinking for label %r from %d bytes (%d distinct)' % (
                         label, len(current), len(set(current))))
 
-                def criterion(s):
-                    assert self.sort_key(s) <= self.sort_key(self.best[label])
-                    return self.classify(s) == label
+                if self.__slow:
+                    thresholds = [0.99, 0.9, 0.0]
+                else:
+                    thresholds = [0.0]
 
-                self.shrink_string(self.best[label], criterion)
+                for threshold in thresholds:
+                    best = self.best[label]
+
+                    def criterion(s):
+                        nonlocal best
+                        assert self.sort_key(s) <= self.sort_key(best)
+                        if len(s) < len(self.best[label]) * threshold:
+                            if self.__volume >= Volume.debug:
+                                self.__write_status("-")
+                            return False 
+                        if self.classify(s) == label:
+                            best = s
+                            return True
+                        else:
+                            return False 
+
+                    if threshold > 0:
+                        with self.in_phase("slowed %r" % (threshold,)):
+                            self.shrink_string(self.best[label], criterion)
+                    else:
+                        self.shrink_string(self.best[label], criterion)
 
     def run_with_timeout(self, shrinker, test_case, predicate, timeout):
         best = test_case
@@ -785,7 +808,7 @@ class Shrinker(object):
 
 
 class ShrinkState(object):
-    def __init__(self, string, criterion, sort_key, random, in_phase):
+    def __init__(self, string, criterion, sort_key, random, in_phase, slow):
         self.__index = IndexTree(string)
         self.string = string
         self.__in_phase = in_phase
@@ -793,13 +816,20 @@ class ShrinkState(object):
         self.__criterion = criterion
         self.__sort_key = sort_key
         self.__shrink_index = 0
-        self.__shrinks = [
-            self.opportunistic,
-            self.adaptive,
-            self.aggressive,
-            self.exhaustive(4), self.exhaustive(5), self.exhaustive(6),
-            self.exhaustive(7),
-        ]
+
+        if slow:
+            self.__shrinks = [
+                self.adaptive,
+            ]
+        else:
+            self.__shrinks = [
+                self.aggressive,
+                self.random_adaptive,
+                self.opportunistic,
+                self.adaptive,
+                self.exhaustive(4), self.exhaustive(5), self.exhaustive(6),
+                self.exhaustive(7),
+            ]
         self.timeout = 10
 
     def count(self, t):
@@ -913,10 +943,51 @@ class ShrinkState(object):
             i += 1
         return test_case
 
+    def random_adaptive(self, test_case, predicate):
+        indices = list(range(len(test_case)))
+
+        def ix_to_test_case(ix):
+            return [test_case[i] for i in ix]
+
+        def index_predicate(ix):
+            return predicate(ix_to_test_case(ix))
+
+        tombstones = set()
+        targets = list(indices)
+        self.__random.shuffle(targets)
+        for i in targets:
+            if i in tombstones:
+                continue
+            k = bisect_left(indices, i)
+            if k >= len(indices) or indices[k] != i:
+                continue
+            prefix = indices[:k]
+            h = find_large_n(
+                len(indices) - k, lambda h: index_predicate(
+                    prefix + indices[k + h:]
+                )
+            )
+            if h > 0:
+                if k + h < len(indices):
+                    tombstones.add(indices[k + h])
+                suffix = indices[k + h:]
+                l = find_large_n(
+                    k, lambda l: index_predicate(indices[:k - l] + suffix)
+                )
+                if l < k:
+                    tombstones.add(indices[k - l - 1])
+                del indices[k - l:k + h]
+                assert index_predicate(indices)
+        return ix_to_test_case(indices)
+
+            
+
+
     def aggressive(self, test_case, predicate):
-        test_case = self.adaptive(test_case, predicate)
+        test_case = self.random_adaptive(test_case, predicate)
         k = 2
         while k < len(test_case):
+            prev = test_case
             with self.__in_phase("%d-intervals" % (k,)):
                 i = 0
                 while i + k <= len(test_case):
@@ -926,54 +997,62 @@ class ShrinkState(object):
                     if predicate(attempt):
                         test_case = attempt
                     else:
-                        attempt = list(test_case)
-                        del attempt[i+k-1]
-                        del attempt[i]
-                        assert len(attempt) < len(test_case)
-                        if predicate(attempt):
-                            test_case = attempt
-                        else:
-                            i += 1
-            k += 1
+                        i += 1
+            if prev == test_case:
+                k += 1
+                
         return test_case
 
     def exhaustive(self, k):
         def accept(test_case, predicate):
-            if len(test_case) > k:
-                test_case = self.aggressive(test_case, predicate)
-            if len(test_case) <= k:
-                def sort_key(b):
-                    try:
-                        return self.__sort_key(b''.join(b))
-                    except TypeError:
-                        return b
+            test_case = self.adaptive(test_case, predicate)
 
-                subsets = []
-                for s in range(1, 2 ** len(test_case) - 1):
-                    bits = []
-                    for x in test_case:
-                        if s & 1:
-                            bits.append(x)
-                        s >>= 1
-                        if not s:
-                            break
-                    subsets.append(bits)
-                subsets.sort(key=lambda b: (len(b), sort_key(b)))
-                for bits in subsets:
-                    if predicate(bits):
-                        return bits
-                return test_case
+            i = 0
+            while i + k <= len(test_case) and len(test_case) > k:
+                prev = test_case
+                prefix = test_case[:i]
+                suffix = test_case[i+k:]
+                core = test_case[i:i+k]
+                assert test_case == prefix + core + suffix
+                test_case = prefix + self.expmin(
+                    core, lambda c: predicate(prefix + c + suffix)
+                ) + suffix
+                assert predicate(test_case)
+                if prev == test_case:
+                    i += 1
+            if len(test_case) <= k:
+                test_case = self.expmin(test_case, predicate)
             return test_case
         accept.__name__ = 'exhaustive(%d)' % (k,)
         return accept
 
-    def partitions(self):
+    def expmin(self, test_case, predicate):
+        def sort_key(b):
+            try:
+                return self.__sort_key(b''.join(b))
+            except TypeError:
+                return b
 
-        with self.__in_phase("bytewise"):
-            yield [bytes([c]) for c in self.string]
+        subsets = []
+        for s in range(1, 2 ** len(test_case) - 1):
+            bits = []
+            for x in test_case:
+                if s & 1:
+                    bits.append(x)
+                s >>= 1
+                if not s:
+                    break
+            subsets.append(bits)
+        subsets.sort(key=lambda b: (len(b), sort_key(b)))
+        for bits in subsets:
+            if predicate(bits):
+                return bits
+        return test_case
+
+    def partitions(self):
         used_ngrams = set()
 
-        retry = True
+        retry = False 
         while retry:
             retry = False
             indices = list(range(len(self.string)))
@@ -1043,7 +1122,7 @@ class ShrinkState(object):
                 retry = True
                 break
 
-        alphabet = set(self.string)
+        alphabet = set(b" \n")
         while alphabet:
             c = min(alphabet, key=self.count)
             alphabet.discard(c)
@@ -1055,6 +1134,9 @@ class ShrinkState(object):
                 partition[i] += c
             with self.__in_phase("partition %r" % (c,)):
                 yield partition
+
+        with self.__in_phase("bytewise"):
+            yield [bytes([c]) for c in self.string]
 
     def tokenize(self):
         tokens = []
@@ -1166,7 +1248,9 @@ class ShrinkState(object):
                     assert b''.join(p) == self.string
                     assert self.partition_criterion(p)
 
-            if len(self.string) == len(prev) or self.__shrink_index == 0:
+            if len(self.string) == len(prev) or (
+                self.__shrink_index == 0 and len(self.__shrinks) > 1
+            ):
                 self.__shrink_index += 1
                 passnum = 0
 

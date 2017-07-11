@@ -72,6 +72,9 @@ process.
 @click.option('--debug', default=False, is_flag=True, help=(
     'Emit (extremely verbose) debug output while shrinking'
 ))
+@click.option('--slow', default=False, is_flag=True, help=(
+    'Deliberately slow down the shrinking process'
+))
 @click.option('--preserve-lines', default=False, is_flag=True, help=(
     'Do not make any changes within individual lines'
 ))
@@ -115,7 +118,7 @@ process.
 ), nargs=-1)
 def shrinker(
     debug, quiet, backup, filename, test, shrinks, preprocess, timeout,
-    classify, filenames, seed, principal, passes, preserve_lines
+    classify, filenames, seed, principal, passes, preserve_lines, slow
 ):
     if debug and quiet:
         raise click.UsageError('Cannot have both debug output and be quiet')
@@ -282,7 +285,7 @@ def shrinker(
         initial, classify_data, volume=volume,
         shrink_callback=shrink_callback, printer=click.echo,
         preprocess=preprocessor, principal_only=principal,
-        passes=passes or None, preserve_lines=preserve_lines,
+        passes=passes or None, preserve_lines=preserve_lines, slow=slow,
     )
     initial_label = shrinker.classify(initial)
     # Go through the old shrunk files. This both reintegrates them into our
@@ -304,16 +307,6 @@ def shrinker(
                     'Reusing previous %d byte example for label %r' % (
                         len(contents), status
                     ))
-        for f in os.listdir(history):
-            path = os.path.join(history, f)
-            if not os.path.isfile(path):
-                continue
-            with open(path, 'rb') as i:
-                contents = i.read()
-            if principal and len(contents) > len(initial):
-                continue
-            shrinker.classify(contents)
-
         for filepath in filenames:
             with open(filepath, 'rb') as i:
                 value = i.read()
